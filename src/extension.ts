@@ -214,6 +214,86 @@ export function activate(context: vscode.ExtensionContext) {
 			});
 		}
 		
+		// 1.5 使用正则匹配结构体定义和字段
+		const structRegex = /type\s+(\w+)\s+struct\s*\{([^}]*)\}/gs;
+		let structMatch;
+		
+		// 存储接口名字以便检查结构体字段是否引用了接口
+		const interfaceNames = new Set<string>();
+		
+		// 收集所有接口名称
+		const allInterfaceRegex = /type\s+(\w+)\s+interface\s*\{/g;
+		let interfaceNameMatch;
+		while ((interfaceNameMatch = allInterfaceRegex.exec(text)) !== null) {
+			interfaceNames.add(interfaceNameMatch[1]);
+		}
+		
+		console.log('开始扫描结构体...');
+		while ((structMatch = structRegex.exec(text)) !== null) {
+			const structName = structMatch[1];
+			const structStartPos = document.positionAt(structMatch.index);
+			const structLine = structStartPos.line;
+			
+			// 为结构体定义行添加装饰（只针对service或repository相关结构体）
+			if (structName.toLowerCase().includes('service') || 
+				structName.toLowerCase().includes('repository') ||
+				structName.toLowerCase().includes('store') ||
+				structName.toLowerCase().includes('dao')) {
+				
+				methodMap.set(structLine, structName);
+				console.log(`找到服务相关结构体: ${structName} at line ${structLine}`);
+				
+				interfaceDecorations.push({
+					range: new vscode.Range(
+						new vscode.Position(structLine, 0),
+						new vscode.Position(structLine, 0)
+					),
+					hoverMessage: `点击跳转到 ${structName} 的引用或实现`
+				});
+			}
+
+			const structContent = structMatch[2];
+			
+			// 按行分割结构体内容以更精确地处理每行
+			const contentLines = structContent.split('\n');
+			let lineOffset = document.positionAt(structMatch.index + structMatch[0].indexOf(structContent)).line;
+			
+			for (const line of contentLines) {
+				// 跳过空行和注释行
+				if (!line.trim() || line.trim().startsWith('//')) {
+					lineOffset++;
+					continue;
+				}
+				
+				// 匹配结构体字段: 字段名 类型
+				const fieldMatch = line.match(/\s*(\w+)?\s+([A-Za-z0-9_]+)/);
+				if (fieldMatch) {
+					const fieldName = fieldMatch[1] || fieldMatch[2]; // 如果第一个捕获组为空，则使用第二个（可能是嵌入式字段）
+					const fieldType = fieldMatch[2];
+					
+					// 只为引用接口类型的字段添加跳转功能
+					if (interfaceNames.has(fieldType)) {
+						// 记录字段行号和名称的对应关系
+						methodMap.set(lineOffset, fieldType);
+						console.log(`找到接口引用字段: ${fieldName}: ${fieldType} at line ${lineOffset}`);
+						
+						// 添加装饰 - 只在装订线区域显示图标
+						const range = new vscode.Range(
+							new vscode.Position(lineOffset, 0),
+							new vscode.Position(lineOffset, 0)
+						);
+						
+						interfaceDecorations.push({
+							range,
+							hoverMessage: `点击跳转到 ${fieldType} 的定义`
+						});
+					}
+				}
+				
+				lineOffset++;
+			}
+		}
+		
 		// 保存方法映射
 		const docKey = document.uri.toString();
 		lineToMethodMap.set(docKey, methodMap);
@@ -236,6 +316,11 @@ export function activate(context: vscode.ExtensionContext) {
 				
 				console.log(`点击事件: line=${clickedLine}, char=${clickedChar}`);
 				
+				// 只响应在最左侧区域的点击（装订线区域）
+				if (clickedChar > 3) {
+					return; // 不是点击图标区域，忽略
+				}
+				
 				// 检查是否在方法名前面的图标区域点击
 				const docKey = editor.document.uri.toString();
 				const methodMap = lineToMethodMap.get(docKey);
@@ -244,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const methodName = methodMap.get(clickedLine)!;
 					const lineText = editor.document.lineAt(clickedLine).text;
 					
-					// 检查是接口方法还是实现方法
+					// 检查是接口方法、结构体字段还是实现方法
 					if (lineText.trim().startsWith('func (')) {
 						// 实现方法 - 跳转到接口
 						console.log('点击了实现方法图标');
@@ -253,9 +338,29 @@ export function activate(context: vscode.ExtensionContext) {
 							editor.document.uri, 
 							clickedLine
 						);
+					} else if (lineText.trim().startsWith('type') && lineText.includes('struct')) {
+						// 结构体定义 - 查找引用
+						console.log('点击了结构体定义图标');
+						vscode.commands.executeCommand(
+							'editor.action.findReferences', 
+							editor.document.uri, 
+							new vscode.Position(clickedLine, lineText.indexOf(methodName))
+						);
+					} else if (lineText.includes('struct')) {
+						// 结构体字段 - 跳转到字段类型定义
+						console.log('点击了结构体字段图标');
+						// 定位到字段类型名称
+						const position = new vscode.Position(
+							clickedLine, 
+							lineText.indexOf(methodName)
+						);
+						editor.selection = new vscode.Selection(position, position);
+						editor.revealRange(new vscode.Range(position, position));
+						
+						vscode.commands.executeCommand('editor.action.goToDefinition');
 					} else {
-						// 接口方法 - 跳转到实现
-						console.log('点击了接口方法图标');
+						// 接口方法或接口定义 - 跳转到实现
+						console.log('点击了接口方法/接口定义图标');
 						vscode.commands.executeCommand(
 							'ijump.jumpToImplementation', 
 							editor.document.uri, 
