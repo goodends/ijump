@@ -211,17 +211,6 @@ export function activate(context: vscode.ExtensionContext) {
 				structMethodsMap.set(receiverType, []);
 			}
 			structMethodsMap.get(receiverType)?.push(methodName);
-			
-			// 添加装饰 - 只在装订线区域显示图标
-			const range = new vscode.Range(
-				new vscode.Position(methodLine, 0),
-				new vscode.Position(methodLine, 0)
-			);
-			
-			implementationDecorations.push({
-				range,
-				hoverMessage: `点击跳转到 ${methodName} 的接口定义`
-			});
 		}
 		
 		// 3. 检查结构体是否实现了接口
@@ -236,6 +225,19 @@ export function activate(context: vscode.ExtensionContext) {
 					implementedInterfaces.add(interfaceName);
 					console.log(`接口 ${interfaceName} 被 ${structName} 实现`);
 					break interfaceLoop;
+				}
+			}
+		}
+		
+		// 创建一个集合，存储所有实现了接口的方法
+		const interfaceImplementingMethods = new Set<string>();
+		
+		// 记录实现了接口的方法
+		for (const [interfaceName, interfaceMethods] of interfaceMethodsMap.entries()) {
+			if (implementedInterfaces.has(interfaceName)) {
+				// 将所有接口方法添加到集合中
+				for (const method of interfaceMethods) {
+					interfaceImplementingMethods.add(method);
 				}
 			}
 		}
@@ -265,6 +267,33 @@ export function activate(context: vscode.ExtensionContext) {
 						});
 					}
 				}
+			}
+		}
+		
+		// 5. 为实现接口的方法添加装饰
+		// 清空之前的实现装饰
+		implementationDecorations.length = 0;
+		
+		// 重新扫描方法实现，只为实现接口的方法添加装饰
+		const implementationRegexForDecoration = /func\s+\(\w+\s+\*?(\w+)\)\s+([A-Za-z0-9_]+)\s*\([^)]*\)/g;
+		while ((implMatch = implementationRegexForDecoration.exec(text)) !== null) {
+			const receiverType = implMatch[1];
+			const methodName = implMatch[2];
+			const methodPos = document.positionAt(implMatch.index);
+			const methodLine = methodPos.line;
+			
+			// 只为实现接口的方法添加装饰
+			if (interfaceImplementingMethods.has(methodName)) {
+				// 添加装饰 - 只在装订线区域显示图标
+				const range = new vscode.Range(
+					new vscode.Position(methodLine, 0),
+					new vscode.Position(methodLine, 0)
+				);
+				
+				implementationDecorations.push({
+					range,
+					hoverMessage: `点击跳转到 ${methodName} 的接口定义`
+				});
 			}
 		}
 		
