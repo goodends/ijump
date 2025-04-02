@@ -37,6 +37,8 @@ export function activate(context: vscode.ExtensionContext) {
 	const implToInterfaceMap = new Map<string, Map<string, string>>();
 	// 存储已装饰的行号
 	const decoratedLines = new Map<string, Set<number>>();
+	// 存储每行的类型（接口或实现）
+	const lineTypeMap = new Map<string, Map<number, 'interface' | 'implementation'>>();
 
 	// 跳转到接口方法的命令
 	context.subscriptions.push(
@@ -127,6 +129,8 @@ export function activate(context: vscode.ExtensionContext) {
 		const interfaceDecorations: vscode.DecorationOptions[] = [];
 		const implementationDecorations: vscode.DecorationOptions[] = [];
 		const methodMap = new Map<number, string>();
+		// 记录每行的类型（接口或实现）
+		const lineTypes = new Map<number, 'interface' | 'implementation'>();
 		
 		// 创建文档的装饰行集合
 		const docDecoratedLines = new Set<number>();
@@ -266,6 +270,8 @@ export function activate(context: vscode.ExtensionContext) {
 				
 				// 记录装饰的行
 				docDecoratedLines.add(line);
+				// 记录行类型
+				lineTypes.set(line, 'interface');
 				
 				// 为接口方法添加装饰
 				const methodLines = interfaceMethodLines.get(interfaceName);
@@ -285,6 +291,8 @@ export function activate(context: vscode.ExtensionContext) {
 						
 						// 记录装饰的行
 						docDecoratedLines.add(methodLine);
+						// 记录行类型
+						lineTypes.set(methodLine, 'interface');
 					}
 				}
 			}
@@ -321,6 +329,8 @@ export function activate(context: vscode.ExtensionContext) {
 				
 				// 记录装饰的行
 				docDecoratedLines.add(methodLine);
+				// 记录行类型
+				lineTypes.set(methodLine, 'implementation');
 			}
 		}
 		
@@ -367,6 +377,8 @@ export function activate(context: vscode.ExtensionContext) {
 				
 				// 记录装饰的行
 				docDecoratedLines.add(structLine);
+				// 记录行类型
+				lineTypes.set(structLine, 'implementation');
 			}
 
 			const structContent = structMatch[2];
@@ -411,6 +423,8 @@ export function activate(context: vscode.ExtensionContext) {
 						
 						// 记录装饰的行
 						docDecoratedLines.add(lineOffset);
+						// 记录行类型
+						lineTypes.set(lineOffset, 'implementation');
 					}
 				}
 				
@@ -425,6 +439,9 @@ export function activate(context: vscode.ExtensionContext) {
 		// 保存装饰行信息
 		decoratedLines.set(docKey, docDecoratedLines);
 		
+		// 保存行类型信息
+		lineTypeMap.set(docKey, lineTypes);
+		
 		// 应用装饰
 		editor.setDecorations(interfaceDecorationType, interfaceDecorations);
 		editor.setDecorations(implementationDecorationType, implementationDecorations);
@@ -438,17 +455,32 @@ export function activate(context: vscode.ExtensionContext) {
 				const docKey = document.uri.toString();
 				const methodMap = lineToMethodMap.get(docKey);
 				const docDecoratedLines = decoratedLines.get(docKey);
+				const lineTypes = lineTypeMap.get(docKey);
 				
 				// 如果行没有被装饰，不显示悬停信息
-				if (!methodMap || !methodMap.has(position.line) || !docDecoratedLines || !docDecoratedLines.has(position.line)) {
+				if (!methodMap || !methodMap.has(position.line) || 
+					!docDecoratedLines || !docDecoratedLines.has(position.line) ||
+					!lineTypes || !lineTypes.has(position.line)) {
 					return null;
 				}
 				
 				const methodName = methodMap.get(position.line)!;
+				const lineType = lineTypes.get(position.line)!;
 				const commandUri = `command:ijump.jumpToImplementation?${encodeURIComponent(JSON.stringify([document.uri, position.line]))}`;
 				const markdown = new vscode.MarkdownString();
 				markdown.isTrusted = true;
-				markdown.appendMarkdown(`[➡️ 跳转到 ${methodName} 的实现](${commandUri})`);
+				
+				if (lineType === 'interface') {
+					// 接口或接口方法 - 显示跳转到实现
+					markdown.appendMarkdown(`**接口**: ${methodName}\n\n[➡️ 跳转到实现](${commandUri})`);
+				} else if (lineType === 'implementation') {
+					// 实现方法或结构体 - 显示跳转到接口定义
+					markdown.appendMarkdown(`**实现**: ${methodName}\n\n[⬆️ 跳转到接口定义](${commandUri})`);
+				} else {
+					// 默认情况
+					markdown.appendMarkdown(`[➡️ 跳转到 ${methodName} 的实现](${commandUri})`);
+				}
+				
 				return new vscode.Hover(markdown);
 			}
 		})
