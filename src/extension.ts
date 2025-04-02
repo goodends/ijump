@@ -12,18 +12,19 @@ export function activate(context: vscode.ExtensionContext) {
 	console.log('扩展 "ijump" 已激活!');
 
 	// 创建装饰类型
-	const interfaceIconPath = path.join(context.extensionPath, 'resources', 'implementation.svg');
-	const implementationIconPath = path.join(context.extensionPath, 'resources', 'implementation.svg'); // 可以使用相同图标或创建新图标
+	const interfaceIconPath = path.join(context.extensionPath, 'resources', 'interface.svg');
+	const implementationIconPath = path.join(context.extensionPath, 'resources', 'implementation.svg');
 	console.log('接口图标路径:', interfaceIconPath);
+	console.log('实现图标路径:', implementationIconPath);
 	
-	// 接口方法装饰（跳转到实现）
+	// 接口方法装饰（跳转到实现）- 使用绿色图标
 	const interfaceDecorationType = vscode.window.createTextEditorDecorationType({
 		gutterIconPath: interfaceIconPath,
 		gutterIconSize: '60%',
 		isWholeLine: false
 	});
 	
-	// 实现方法装饰（跳转到接口）
+	// 实现方法装饰（跳转到接口）- 使用蓝色图标
 	const implementationDecorationType = vscode.window.createTextEditorDecorationType({
 		gutterIconPath: implementationIconPath,
 		gutterIconSize: '60%',
@@ -251,7 +252,7 @@ export function activate(context: vscode.ExtensionContext) {
 						new vscode.Position(line, 0),
 						new vscode.Position(line, 0)
 					),
-					hoverMessage: `点击跳转到 ${interfaceName} 的实现`
+					hoverMessage: `接口定义: ${interfaceName} - 点击跳转到实现`
 				});
 				
 				// 为接口方法添加装饰
@@ -263,7 +264,7 @@ export function activate(context: vscode.ExtensionContext) {
 								new vscode.Position(methodLine, 0),
 								new vscode.Position(methodLine, 0)
 							),
-							hoverMessage: `点击跳转到 ${methodName} 的实现`
+							hoverMessage: `接口方法: ${methodName} - 点击跳转到实现`
 						});
 					}
 				}
@@ -292,7 +293,7 @@ export function activate(context: vscode.ExtensionContext) {
 				
 				implementationDecorations.push({
 					range,
-					hoverMessage: `点击跳转到 ${methodName} 的接口定义`
+					hoverMessage: `实现方法: ${methodName} - 点击跳转到接口定义`
 				});
 			}
 		}
@@ -331,7 +332,7 @@ export function activate(context: vscode.ExtensionContext) {
 						new vscode.Position(structLine, 0),
 						new vscode.Position(structLine, 0)
 					),
-					hoverMessage: `点击跳转到 ${structName} 的引用或实现`
+					hoverMessage: `服务结构体: ${structName} - 点击跳转到引用或实现`
 				});
 			}
 
@@ -368,7 +369,7 @@ export function activate(context: vscode.ExtensionContext) {
 						
 						interfaceDecorations.push({
 							range,
-							hoverMessage: `点击跳转到 ${fieldType} 的定义`
+							hoverMessage: `接口引用: ${fieldType} - 点击跳转到接口定义`
 						});
 					}
 				}
