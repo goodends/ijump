@@ -125,6 +125,16 @@ export function activate(context: vscode.ExtensionContext) {
 		const implementationDecorations: vscode.DecorationOptions[] = [];
 		const methodMap = new Map<number, string>();
 
+		// 存储接口名称及其方法
+		const interfaceMethodsMap = new Map<string, string[]>();
+		// 存储结构体名称及其方法
+		const structMethodsMap = new Map<string, string[]>();
+		// 存储已实现的接口名称
+		const implementedInterfaces = new Set<string>();
+		// 临时存储接口和方法的行信息，等确认是否实现后再添加装饰
+		const interfaceLines = new Map<string, number>(); // 接口名称 -> 行号
+		const interfaceMethodLines = new Map<string, Map<string, number>>(); // 接口名称 -> 方法名称 -> 行号
+
 		// 1. 使用正则匹配接口定义和方法
 		const text = document.getText();
 		const interfaceRegex = /type\s+(\w+)\s+interface\s*\{([^}]*)\}/gs;
@@ -137,17 +147,18 @@ export function activate(context: vscode.ExtensionContext) {
 			const interfaceStartPos = document.positionAt(interfaceMatch.index);
 			const interfaceLine = interfaceStartPos.line;
 			
-			// 为接口定义行添加装饰
+			// 为接口定义行记录信息
 			methodMap.set(interfaceLine, interfaceName);
 			console.log(`找到接口: ${interfaceName} at line ${interfaceLine}`);
 			
-			interfaceDecorations.push({
-				range: new vscode.Range(
-					new vscode.Position(interfaceLine, 0),
-					new vscode.Position(interfaceLine, 0)
-				),
-				hoverMessage: `点击跳转到 ${interfaceName} 的实现`
-			});
+			// 记录接口行号
+			interfaceLines.set(interfaceName, interfaceLine);
+			
+			// 初始化接口方法列表和方法行号映射
+			if (!interfaceMethodsMap.has(interfaceName)) {
+				interfaceMethodsMap.set(interfaceName, []);
+				interfaceMethodLines.set(interfaceName, new Map<string, number>());
+			}
 
 			const interfaceContent = interfaceMatch[2];
 			
@@ -171,16 +182,9 @@ export function activate(context: vscode.ExtensionContext) {
 					methodMap.set(lineOffset, methodName);
 					console.log(`找到接口方法: ${methodName} at line ${lineOffset}`);
 					
-					// 添加装饰 - 只在装订线区域显示图标
-					const range = new vscode.Range(
-						new vscode.Position(lineOffset, 0),
-						new vscode.Position(lineOffset, 0)
-					);
-					
-					interfaceDecorations.push({
-						range,
-						hoverMessage: `点击跳转到 ${methodName} 的实现`
-					});
+					// 记录接口方法和行号
+					interfaceMethodsMap.get(interfaceName)?.push(methodName);
+					interfaceMethodLines.get(interfaceName)?.set(methodName, lineOffset);
 				}
 				
 				lineOffset++;
@@ -202,6 +206,12 @@ export function activate(context: vscode.ExtensionContext) {
 			methodMap.set(methodLine, methodName);
 			console.log(`找到实现方法: ${receiverType}.${methodName} at line ${methodLine}`);
 			
+			// 记录结构体方法
+			if (!structMethodsMap.has(receiverType)) {
+				structMethodsMap.set(receiverType, []);
+			}
+			structMethodsMap.get(receiverType)?.push(methodName);
+			
 			// 添加装饰 - 只在装订线区域显示图标
 			const range = new vscode.Range(
 				new vscode.Position(methodLine, 0),
@@ -212,6 +222,50 @@ export function activate(context: vscode.ExtensionContext) {
 				range,
 				hoverMessage: `点击跳转到 ${methodName} 的接口定义`
 			});
+		}
+		
+		// 3. 检查结构体是否实现了接口
+		for (const [interfaceName, interfaceMethods] of interfaceMethodsMap.entries()) {
+			interfaceLoop: for (const [structName, structMethods] of structMethodsMap.entries()) {
+				// 检查结构体是否实现了接口所有方法
+				const allMethodsImplemented = interfaceMethods.every(method => 
+					structMethods.includes(method)
+				);
+				
+				if (allMethodsImplemented && interfaceMethods.length > 0) {
+					implementedInterfaces.add(interfaceName);
+					console.log(`接口 ${interfaceName} 被 ${structName} 实现`);
+					break interfaceLoop;
+				}
+			}
+		}
+		
+		// 4. 为已实现的接口添加装饰
+		for (const [interfaceName, line] of interfaceLines.entries()) {
+			if (implementedInterfaces.has(interfaceName)) {
+				// 为接口定义添加装饰
+				interfaceDecorations.push({
+					range: new vscode.Range(
+						new vscode.Position(line, 0),
+						new vscode.Position(line, 0)
+					),
+					hoverMessage: `点击跳转到 ${interfaceName} 的实现`
+				});
+				
+				// 为接口方法添加装饰
+				const methodLines = interfaceMethodLines.get(interfaceName);
+				if (methodLines) {
+					for (const [methodName, methodLine] of methodLines.entries()) {
+						interfaceDecorations.push({
+							range: new vscode.Range(
+								new vscode.Position(methodLine, 0),
+								new vscode.Position(methodLine, 0)
+							),
+							hoverMessage: `点击跳转到 ${methodName} 的实现`
+						});
+					}
+				}
+			}
 		}
 		
 		// 1.5 使用正则匹配结构体定义和字段
