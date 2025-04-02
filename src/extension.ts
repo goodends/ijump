@@ -327,7 +327,7 @@ export function activate(context: vscode.ExtensionContext) {
 				methodMap.set(structLine, structName);
 				console.log(`找到服务相关结构体: ${structName} at line ${structLine}`);
 				
-				interfaceDecorations.push({
+				implementationDecorations.push({
 					range: new vscode.Range(
 						new vscode.Position(structLine, 0),
 						new vscode.Position(structLine, 0)
@@ -367,7 +367,7 @@ export function activate(context: vscode.ExtensionContext) {
 							new vscode.Position(lineOffset, 0)
 						);
 						
-						interfaceDecorations.push({
+						implementationDecorations.push({
 							range,
 							hoverMessage: `接口引用: ${fieldType} - 点击跳转到接口定义`
 						});
