@@ -261,16 +261,16 @@ class DecorationGenerator {
 				// 为接口定义添加装饰
 				const interfaceLine = methodLocations.get('__interface_def__');
 				if (interfaceLine !== undefined) {
-					const interfaceDefMarkdown = new vscode.MarkdownString();
-					interfaceDefMarkdown.isTrusted = true;
-					interfaceDefMarkdown.appendMarkdown(`**接口定义**: ${interfaceName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
+					// const interfaceDefMarkdown = new vscode.MarkdownString();
+					// interfaceDefMarkdown.isTrusted = true;
+					// interfaceDefMarkdown.appendMarkdown(`**接口定义**: ${interfaceName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
 					
 					interfaceDecorations.push({
 						range: new vscode.Range(
 							new vscode.Position(interfaceLine, 0),
 							new vscode.Position(interfaceLine, 0)
 						),
-						hoverMessage: interfaceDefMarkdown
+						// hoverMessage: interfaceDefMarkdown
 					});
 				}
 				
@@ -281,16 +281,16 @@ class DecorationGenerator {
 						continue;
 					}
 					
-					const markdown = new vscode.MarkdownString();
-					markdown.isTrusted = true;
-					markdown.appendMarkdown(`**接口方法**: ${methodName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
+					// const markdown = new vscode.MarkdownString();
+					// markdown.isTrusted = true;
+					// markdown.appendMarkdown(`**接口方法**: ${methodName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
 					
 					interfaceDecorations.push({
 						range: new vscode.Range(
 							new vscode.Position(methodLine, 0),
 							new vscode.Position(methodLine, 0)
 						),
-						hoverMessage: markdown
+						// hoverMessage: markdown
 					});
 				}
 			}
@@ -325,16 +325,16 @@ class DecorationGenerator {
 			for (const [methodName, methodLine] of methodsMap.entries()) {
 				// 只为实现接口的方法添加装饰
 				if (interfaceImplementingMethods.has(methodName)) {
-					const markdown = new vscode.MarkdownString();
-					markdown.isTrusted = true;
-					markdown.appendMarkdown(`**实现方法**: ${methodName}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
+					// const markdown = new vscode.MarkdownString();
+					// markdown.isTrusted = true;
+					// markdown.appendMarkdown(`**实现方法**: ${methodName}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
 					
 					implementationDecorations.push({
 						range: new vscode.Range(
 							new vscode.Position(methodLine, 0),
 							new vscode.Position(methodLine, 0)
 						),
-						hoverMessage: markdown
+						// hoverMessage: markdown
 					});
 				}
 			}
@@ -348,16 +348,16 @@ class DecorationGenerator {
 				structName.toLowerCase().includes('dao')) {
 				
 				const structLine = structInfo.get('line');
-				const structMarkdown = new vscode.MarkdownString();
-				structMarkdown.isTrusted = true;
-				structMarkdown.appendMarkdown(`**服务结构体**: ${structName}\n\n[🔍 查找引用](command:editor.action.goToReferences)`);
+				// const structMarkdown = new vscode.MarkdownString();
+				// structMarkdown.isTrusted = true;
+				// structMarkdown.appendMarkdown(`**服务结构体**: ${structName}\n\n[🔍 查找引用](command:editor.action.goToReferences)`);
 				
 				implementationDecorations.push({
 					range: new vscode.Range(
 						new vscode.Position(structLine, 0),
 						new vscode.Position(structLine, 0)
 					),
-					hoverMessage: structMarkdown
+					// hoverMessage: structMarkdown
 				});
 			}
 			
@@ -367,16 +367,16 @@ class DecorationGenerator {
 				const fieldType = fieldInfo.type;
 				const fieldLine = fieldInfo.line;
 				
-				const fieldMarkdown = new vscode.MarkdownString();
-				fieldMarkdown.isTrusted = true;
-				fieldMarkdown.appendMarkdown(`**接口引用**: ${fieldType}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
+				// const fieldMarkdown = new vscode.MarkdownString();
+				// fieldMarkdown.isTrusted = true;
+				// fieldMarkdown.appendMarkdown(`**接口引用**: ${fieldType}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
 				
 				implementationDecorations.push({
 					range: new vscode.Range(
 						new vscode.Position(fieldLine, 0),
 						new vscode.Position(fieldLine, 0)
 					),
-					hoverMessage: fieldMarkdown
+					// hoverMessage: fieldMarkdown
 				});
 			}
 		}
