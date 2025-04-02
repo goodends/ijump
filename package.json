@@ -1,8 +1,9 @@
 {
   "name": "ijump",
-  "displayName": "ijump",
-  "description": "接口中的方法跳转到实现",
+  "displayName": "IJump",
+  "description": "Go语言接口方法跳转到实现工具",
   "version": "0.0.1",
+  "publisher": "zhengxiaojun",
   "engines": {
     "vscode": "^1.96.0"
   },
