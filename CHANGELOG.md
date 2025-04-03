@@ -4,6 +4,13 @@ All notable changes to the "ijump" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.1] - 2024-04-03
+
+### 修复
+- 更新文档，修复图片显示问题
+- 细节调整和代码清理
+- 提升与VS Code扩展市场的兼容性
+
 ## [0.1.0] - 2024-04-03
 
 ### 新增功能

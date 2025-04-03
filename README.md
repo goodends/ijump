@@ -4,7 +4,7 @@
 
 ## 功能演示
 
-![IJump功能演示](resources/screenshot.png)
+![IJump功能演示](https://raw.githubusercontent.com/goodends/ijump/master/resources/image.png)
 
 如上图所示，IJump 会在接口定义和方法实现的行首添加导航图标，鼠标悬停在图标上可以看到功能提示，点击即可快速跳转。
 
@@ -72,7 +72,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, token string) (*TokenInf
 有两种方法安装此扩展:
 
 1. 在 VS Code 扩展市场中搜索 "IJump"，然后点击安装
-2. 或者在命令行中运行: `code --install-extension ijump-0.1.0.vsix`
+2. 或者在命令行中运行: `code --install-extension ijump-0.1.1.vsix`
 
 ## 要求
 
@@ -91,6 +91,12 @@ func (s *AuthService) RefreshToken(ctx context.Context, token string) (*TokenInf
 如果您发现任何问题，请在 GitHub 仓库中提交 issue。
 
 ## 发布说明
+
+### 0.1.1 (2024-04-03)
+
+- **修复**: 更新文档，修复图片显示问题
+- **优化**: 细节调整和代码清理
+- **改进**: 提升与VS Code扩展市场的兼容性
 
 ### 0.1.0 (2024-04-03)
 
