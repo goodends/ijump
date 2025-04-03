@@ -420,8 +420,9 @@ class DecorationGenerator {
 											implementedInterfaces: Set<string>,
 											interfaceMethodsMap: Map<string, string[]>,
 											structMethodsMap: Map<string, Map<string, { line: number, uri: vscode.Uri }>>,
-											structsMap: Map<string, Map<string, any>>): Promise<vscode.DecorationOptions[]> {
+											structsMap: Map<string, Map<string, any>>): Promise<[vscode.DecorationOptions[], vscode.DecorationOptions[]]> {
 		const implementationDecorations: vscode.DecorationOptions[] = [];
+		const interfaceReferenceDecorations: vscode.DecorationOptions[] = [];
 		
 		// 只为当前文档生成装饰
 		const currentDocUriString = currentDocument.uri.toString();
@@ -459,7 +460,9 @@ class DecorationGenerator {
 			if (structName.toLowerCase().includes('service') || 
 				structName.toLowerCase().includes('repository') ||
 				structName.toLowerCase().includes('store') ||
-				structName.toLowerCase().includes('dao')) {
+				structName.toLowerCase().includes('dao') ||
+				structName.toLowerCase().includes('cache') ||
+				structName.toLowerCase().includes('manager')) {
 				
 				const structLine = structInfo.get('line');
 				const structUri = structInfo.get('uri');
@@ -475,7 +478,7 @@ class DecorationGenerator {
 				}
 			}
 			
-			// 为引用接口类型的字段添加装饰
+			// 为引用接口类型的字段添加装饰 - 改为接口引用装饰
 			const fields = structInfo.get('fields');
 			for (const [fieldName, fieldInfo] of fields.entries()) {
 				const fieldLine = fieldInfo.line;
@@ -483,7 +486,7 @@ class DecorationGenerator {
 				
 				// 只为当前文档中的字段添加装饰
 				if (fieldUri && fieldUri.toString() === currentDocUriString) {
-					implementationDecorations.push({
+					interfaceReferenceDecorations.push({
 						range: new vscode.Range(
 							new vscode.Position(fieldLine, 0),
 							new vscode.Position(fieldLine, 0)
@@ -493,7 +496,7 @@ class DecorationGenerator {
 			}
 		}
 		
-		return implementationDecorations;
+		return [implementationDecorations, interfaceReferenceDecorations];
 	}
 }
 
@@ -742,7 +745,7 @@ class IJumpExtension {
 				interfaceLocationsMap
 			);
 			
-			const implementationDecorations = await this.decorationGenerator.generateImplementationDecorations(
+			const [implementationDecorations, interfaceReferenceDecorations] = await this.decorationGenerator.generateImplementationDecorations(
 				document, 
 				implementedInterfaces, 
 				interfaceMethodsMap, 
@@ -798,7 +801,9 @@ class IJumpExtension {
 				if (structName.toLowerCase().includes('service') || 
 					structName.toLowerCase().includes('repository') ||
 					structName.toLowerCase().includes('store') ||
-					structName.toLowerCase().includes('dao')) {
+					structName.toLowerCase().includes('dao') ||
+					structName.toLowerCase().includes('cache') ||
+					structName.toLowerCase().includes('manager')) {
 					
 					const structLine = structInfo.get('line');
 					const structUri = structInfo.get('uri');
@@ -819,7 +824,7 @@ class IJumpExtension {
 					
 					if (fieldUri && fieldUri.toString() === docKey) {
 						methodMap.set(fieldLine, fieldType);
-						lineTypes.set(fieldLine, 'implementation');
+						lineTypes.set(fieldLine, 'interface');
 						docDecoratedLines.add(fieldLine);
 					}
 				}
@@ -831,7 +836,9 @@ class IJumpExtension {
 			this.cacheManager.updateDecoratedLines(docKey, docDecoratedLines);
 			
 			// 应用装饰
-			this.decorationManager.applyDecorations(editor, interfaceDecorations, implementationDecorations);
+			this.decorationManager.applyDecorations(editor, 
+				[...interfaceDecorations, ...interfaceReferenceDecorations], 
+				implementationDecorations);
 		} catch (error) {
 			console.error('更新装饰失败:', error);
 		}
