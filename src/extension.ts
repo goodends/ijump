@@ -10,6 +10,13 @@ interface MethodInfo {
 	type: 'interface' | 'implementation';
 }
 
+// 添加新的接口用于存储文件信息
+interface GoFileInfo {
+	uri: vscode.Uri;
+	packageName: string;
+	content: string;
+}
+
 // 定义装饰类
 class DecorationManager {
 	private interfaceDecorationType: vscode.TextEditorDecorationType;
@@ -56,34 +63,116 @@ class DecorationManager {
 
 // 代码解析器类
 class GoCodeParser {
-	// 解析接口
-	parseInterfaces(document: vscode.TextDocument): Map<string, string[]> {
+	private fileCache = new Map<string, GoFileInfo>();
+	
+	// 获取文件所在的包名
+	private getPackageName(content: string): string {
+		const packageMatch = content.match(/package\s+(\w+)/);
+		return packageMatch ? packageMatch[1] : '';
+	}
+	
+	// 获取同一包下的所有文件
+	async getSamePackageFiles(document: vscode.TextDocument): Promise<GoFileInfo[]> {
 		const text = document.getText();
-		const interfaceMethodsMap = new Map<string, string[]>();
-		const interfaceRegex = /type\s+(\w+)\s+interface\s*\{([^}]*)\}/gs;
-		let interfaceMatch;
+		const packageName = this.getPackageName(text);
+		if (!packageName) {
+			return []; // 如果找不到包名，返回空数组
+		}
 		
-		while ((interfaceMatch = interfaceRegex.exec(text)) !== null) {
-			const interfaceName = interfaceMatch[1];
-			const interfaceContent = interfaceMatch[2];
+		// 初始化缓存
+		this.fileCache.set(document.uri.toString(), {
+			uri: document.uri,
+			packageName,
+			content: text
+		});
+		
+		// 获取当前文件所在目录
+		const dirPath = document.uri.fsPath.substring(0, document.uri.fsPath.lastIndexOf('/'));
+		
+		try {
+			// 查找同目录下的Go文件
+			const dirUri = vscode.Uri.file(dirPath);
+			const files = await vscode.workspace.fs.readDirectory(dirUri);
 			
-			if (!interfaceMethodsMap.has(interfaceName)) {
-				interfaceMethodsMap.set(interfaceName, []);
+			const goFiles: GoFileInfo[] = [];
+			
+			// 处理所有Go文件
+			for (const [fileName, fileType] of files) {
+				if (fileType === vscode.FileType.File && fileName.endsWith('.go')) {
+					const fileUri = vscode.Uri.joinPath(dirUri, fileName);
+					const fileKey = fileUri.toString();
+					
+					// 检查缓存
+					if (this.fileCache.has(fileKey)) {
+						const cachedFile = this.fileCache.get(fileKey)!;
+						if (cachedFile.packageName === packageName) {
+							goFiles.push(cachedFile);
+							continue;
+						}
+					}
+					
+					// 读取文件内容
+					const fileData = await vscode.workspace.fs.readFile(fileUri);
+					const fileContent = Buffer.from(fileData).toString('utf-8');
+					const filePackage = this.getPackageName(fileContent);
+					
+					// 只处理同一包下的文件
+					if (filePackage === packageName) {
+						const fileInfo: GoFileInfo = {
+							uri: fileUri,
+							packageName: filePackage,
+							content: fileContent
+						};
+						this.fileCache.set(fileKey, fileInfo);
+						goFiles.push(fileInfo);
+					}
+				}
 			}
 			
-			// 按行分割接口内容以更精确地处理每行
-			const contentLines = interfaceContent.split('\n');
-			for (const line of contentLines) {
-				// 跳过空行和注释行
-				if (!line.trim() || line.trim().startsWith('//')) {
-					continue;
+			return goFiles;
+		} catch (error) {
+			console.error('读取目录失败:', error);
+			// 如果读取目录失败，至少返回当前文件
+			return [{
+				uri: document.uri,
+				packageName,
+				content: text
+			}];
+		}
+	}
+	
+	// 解析接口 - 跨文件版本
+	async parseInterfaces(document: vscode.TextDocument): Promise<Map<string, string[]>> {
+		const interfaceMethodsMap = new Map<string, string[]>();
+		const packageFiles = await this.getSamePackageFiles(document);
+		
+		for (const fileInfo of packageFiles) {
+			const text = fileInfo.content;
+			const interfaceRegex = /type\s+(\w+)\s+interface\s*\{([^}]*)\}/gs;
+			let interfaceMatch;
+			
+			while ((interfaceMatch = interfaceRegex.exec(text)) !== null) {
+				const interfaceName = interfaceMatch[1];
+				const interfaceContent = interfaceMatch[2];
+				
+				if (!interfaceMethodsMap.has(interfaceName)) {
+					interfaceMethodsMap.set(interfaceName, []);
 				}
 				
-				// 匹配方法定义: 函数名(参数)返回值
-				const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\([^)]*\)/);
-				if (methodMatch) {
-					const methodName = methodMatch[1];
-					interfaceMethodsMap.get(interfaceName)?.push(methodName);
+				// 按行分割接口内容以更精确地处理每行
+				const contentLines = interfaceContent.split('\n');
+				for (const line of contentLines) {
+					// 跳过空行和注释行
+					if (!line.trim() || line.trim().startsWith('//')) {
+						continue;
+					}
+					
+					// 匹配方法定义: 函数名(参数)返回值
+					const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\([^)]*\)/);
+					if (methodMatch) {
+						const methodName = methodMatch[1];
+						interfaceMethodsMap.get(interfaceName)?.push(methodName);
+					}
 				}
 			}
 		}
@@ -91,140 +180,171 @@ class GoCodeParser {
 		return interfaceMethodsMap;
 	}
 	
-	// 解析接口位置
-	parseInterfaceLocations(document: vscode.TextDocument): Map<string, Map<string, number>> {
-		const text = document.getText();
-		const interfaceLocationsMap = new Map<string, Map<string, number>>();
-		const interfaceRegex = /type\s+(\w+)\s+interface\s*\{([^}]*)\}/gs;
-		let interfaceMatch;
+	// 解析接口位置 - 跨文件版本
+	async parseInterfaceLocations(document: vscode.TextDocument): Promise<Map<string, Map<string, { line: number, uri: vscode.Uri }>>> {
+		const interfaceLocationsMap = new Map<string, Map<string, { line: number, uri: vscode.Uri }>>();
+		const packageFiles = await this.getSamePackageFiles(document);
 		
-		while ((interfaceMatch = interfaceRegex.exec(text)) !== null) {
-			const interfaceName = interfaceMatch[1];
-			const interfaceStartPos = document.positionAt(interfaceMatch.index);
-			const interfaceLine = interfaceStartPos.line;
+		for (const fileInfo of packageFiles) {
+			const text = fileInfo.content;
+			const interfaceRegex = /type\s+(\w+)\s+interface\s*\{([^}]*)\}/gs;
+			let interfaceMatch;
 			
-			// 为接口创建方法位置映射
-			const methodLocations = new Map<string, number>();
-			methodLocations.set('__interface_def__', interfaceLine); // 存储接口定义行
-			
-			const interfaceContent = interfaceMatch[2];
-			const contentLines = interfaceContent.split('\n');
-			let lineOffset = document.positionAt(interfaceMatch.index + interfaceMatch[0].indexOf(interfaceContent)).line;
-			
-			for (const line of contentLines) {
-				// 跳过空行和注释行
-				if (!line.trim() || line.trim().startsWith('//')) {
+			while ((interfaceMatch = interfaceRegex.exec(text)) !== null) {
+				const interfaceName = interfaceMatch[1];
+				const interfaceStartPos = this.getPositionAt(fileInfo, interfaceMatch.index);
+				const interfaceLine = interfaceStartPos.line;
+				
+				// 为接口创建方法位置映射
+				if (!interfaceLocationsMap.has(interfaceName)) {
+					interfaceLocationsMap.set(interfaceName, new Map());
+				}
+				const methodLocations = interfaceLocationsMap.get(interfaceName)!;
+				methodLocations.set('__interface_def__', { line: interfaceLine, uri: fileInfo.uri }); // 存储接口定义行
+				
+				const interfaceContent = interfaceMatch[2];
+				const contentLines = interfaceContent.split('\n');
+				let lineOffset = this.getPositionAt(fileInfo, interfaceMatch.index + interfaceMatch[0].indexOf(interfaceContent)).line;
+				
+				for (const line of contentLines) {
+					// 跳过空行和注释行
+					if (!line.trim() || line.trim().startsWith('//')) {
+						lineOffset++;
+						continue;
+					}
+					
+					// 匹配方法定义: 函数名(参数)返回值
+					const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\([^)]*\)/);
+					if (methodMatch) {
+						const methodName = methodMatch[1];
+						methodLocations.set(methodName, { line: lineOffset, uri: fileInfo.uri });
+					}
+					
 					lineOffset++;
-					continue;
 				}
-				
-				// 匹配方法定义: 函数名(参数)返回值
-				const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\([^)]*\)/);
-				if (methodMatch) {
-					const methodName = methodMatch[1];
-					methodLocations.set(methodName, lineOffset);
-				}
-				
-				lineOffset++;
 			}
-			
-			interfaceLocationsMap.set(interfaceName, methodLocations);
 		}
 		
 		return interfaceLocationsMap;
 	}
 	
-	// 解析方法实现
-	parseImplementations(document: vscode.TextDocument): Map<string, Map<string, number>> {
-		const text = document.getText();
-		const structMethodsMap = new Map<string, Map<string, number>>();
-		const implementationRegex = /func\s+\(\w+\s+\*?(\w+)\)\s+([A-Za-z0-9_]+)\s*\([^)]*\)/g;
-		let implMatch;
+	// 解析方法实现 - 跨文件版本
+	async parseImplementations(document: vscode.TextDocument): Promise<Map<string, Map<string, { line: number, uri: vscode.Uri }>>> {
+		const structMethodsMap = new Map<string, Map<string, { line: number, uri: vscode.Uri }>>();
+		const packageFiles = await this.getSamePackageFiles(document);
 		
-		while ((implMatch = implementationRegex.exec(text)) !== null) {
-			const receiverType = implMatch[1];
-			const methodName = implMatch[2];
-			const methodPos = document.positionAt(implMatch.index);
-			const methodLine = methodPos.line;
+		for (const fileInfo of packageFiles) {
+			const text = fileInfo.content;
+			const implementationRegex = /func\s+\(\w+\s+\*?(\w+)\)\s+([A-Za-z0-9_]+)\s*\([^)]*\)/g;
+			let implMatch;
 			
-			if (!structMethodsMap.has(receiverType)) {
-				structMethodsMap.set(receiverType, new Map<string, number>());
+			while ((implMatch = implementationRegex.exec(text)) !== null) {
+				const receiverType = implMatch[1];
+				const methodName = implMatch[2];
+				const methodPos = this.getPositionAt(fileInfo, implMatch.index);
+				const methodLine = methodPos.line;
+				
+				if (!structMethodsMap.has(receiverType)) {
+					structMethodsMap.set(receiverType, new Map());
+				}
+				
+				structMethodsMap.get(receiverType)?.set(methodName, { 
+					line: methodLine, 
+					uri: fileInfo.uri 
+				});
 			}
-			
-			structMethodsMap.get(receiverType)?.set(methodName, methodLine);
 		}
 		
 		return structMethodsMap;
 	}
 	
-	// 解析结构体
-	parseStructs(document: vscode.TextDocument, interfaceNames: Set<string>): Map<string, Map<string, any>> {
-		const text = document.getText();
+	// 解析结构体 - 跨文件版本
+	async parseStructs(document: vscode.TextDocument, interfaceNames: Set<string>): Promise<Map<string, Map<string, any>>> {
 		const structsMap = new Map<string, Map<string, any>>();
-		const structRegex = /type\s+(\w+)\s+struct\s*\{([^}]*)\}/gs;
-		let structMatch;
+		const packageFiles = await this.getSamePackageFiles(document);
 		
-		while ((structMatch = structRegex.exec(text)) !== null) {
-			const structName = structMatch[1];
-			const structStartPos = document.positionAt(structMatch.index);
-			const structLine = structStartPos.line;
+		for (const fileInfo of packageFiles) {
+			const text = fileInfo.content;
+			const structRegex = /type\s+(\w+)\s+struct\s*\{([^}]*)\}/gs;
+			let structMatch;
 			
-			const structInfo = new Map<string, any>();
-			structInfo.set('line', structLine);
-			structInfo.set('fields', new Map<string, {type: string, line: number}>());
-			
-			const structContent = structMatch[2];
-			const contentLines = structContent.split('\n');
-			let lineOffset = document.positionAt(structMatch.index + structMatch[0].indexOf(structContent)).line;
-			
-			for (const line of contentLines) {
-				// 跳过空行和注释行
-				if (!line.trim() || line.trim().startsWith('//')) {
-					lineOffset++;
-					continue;
-				}
+			while ((structMatch = structRegex.exec(text)) !== null) {
+				const structName = structMatch[1];
+				const structStartPos = this.getPositionAt(fileInfo, structMatch.index);
+				const structLine = structStartPos.line;
 				
-				// 匹配结构体字段: 字段名 类型
-				const fieldMatch = line.match(/\s*(\w+)?\s+([A-Za-z0-9_]+)/);
-				if (fieldMatch) {
-					const fieldName = fieldMatch[1] || fieldMatch[2];
-					const fieldType = fieldMatch[2];
-					
-					// 只记录引用接口类型的字段
-					if (interfaceNames.has(fieldType)) {
-						structInfo.get('fields').set(fieldName, {
-							type: fieldType,
-							line: lineOffset
-						});
+				const structInfo = new Map<string, any>();
+				structInfo.set('line', structLine);
+				structInfo.set('uri', fileInfo.uri);
+				structInfo.set('fields', new Map<string, {type: string, line: number, uri: vscode.Uri}>());
+				
+				const structContent = structMatch[2];
+				const contentLines = structContent.split('\n');
+				let lineOffset = this.getPositionAt(fileInfo, structMatch.index + structMatch[0].indexOf(structContent)).line;
+				
+				for (const line of contentLines) {
+					// 跳过空行和注释行
+					if (!line.trim() || line.trim().startsWith('//')) {
+						lineOffset++;
+						continue;
 					}
+					
+					// 匹配结构体字段: 字段名 类型
+					const fieldMatch = line.match(/\s*(\w+)?\s+([A-Za-z0-9_]+)/);
+					if (fieldMatch) {
+						const fieldName = fieldMatch[1] || fieldMatch[2];
+						const fieldType = fieldMatch[2];
+						
+						// 只记录引用接口类型的字段
+						if (interfaceNames.has(fieldType)) {
+							structInfo.get('fields').set(fieldName, {
+								type: fieldType,
+								line: lineOffset,
+								uri: fileInfo.uri
+							});
+						}
+					}
+					
+					lineOffset++;
 				}
 				
-				lineOffset++;
+				structsMap.set(structName, structInfo);
 			}
-			
-			structsMap.set(structName, structInfo);
 		}
 		
 		return structsMap;
 	}
 	
-	// 获取所有接口名称
-	getAllInterfaceNames(document: vscode.TextDocument): Set<string> {
-		const text = document.getText();
+	// 辅助方法：计算文件中某个偏移位置对应的行号和列号
+	private getPositionAt(fileInfo: GoFileInfo, offset: number): vscode.Position {
+		const textBefore = fileInfo.content.substring(0, offset);
+		const lines = textBefore.split('\n');
+		const line = lines.length - 1;
+		const character = lines[lines.length - 1].length;
+		return new vscode.Position(line, character);
+	}
+	
+	// 获取所有接口名称 - 跨文件版本
+	async getAllInterfaceNames(document: vscode.TextDocument): Promise<Set<string>> {
 		const interfaceNames = new Set<string>();
-		const allInterfaceRegex = /type\s+(\w+)\s+interface\s*\{/g;
-		let interfaceNameMatch;
+		const packageFiles = await this.getSamePackageFiles(document);
 		
-		while ((interfaceNameMatch = allInterfaceRegex.exec(text)) !== null) {
-			interfaceNames.add(interfaceNameMatch[1]);
+		for (const fileInfo of packageFiles) {
+			const text = fileInfo.content;
+			const allInterfaceRegex = /type\s+(\w+)\s+interface\s*\{/g;
+			let interfaceNameMatch;
+			
+			while ((interfaceNameMatch = allInterfaceRegex.exec(text)) !== null) {
+				interfaceNames.add(interfaceNameMatch[1]);
+			}
 		}
 		
 		return interfaceNames;
 	}
 	
-	// 检查结构体是否实现了接口
+	// 检查结构体是否实现了接口 - 跨文件版本
 	checkInterfaceImplementations(interfaceMethodsMap: Map<string, string[]>, 
-								  structMethodsMap: Map<string, Map<string, number>>): Set<string> {
+								structMethodsMap: Map<string, Map<string, any>>): Set<string> {
 		const implementedInterfaces = new Set<string>();
 		
 		for (const [interfaceName, interfaceMethods] of interfaceMethodsMap.entries()) {
@@ -250,48 +370,44 @@ class GoCodeParser {
 class DecorationGenerator {
 	constructor(private parser: GoCodeParser) {}
 	
-	// 生成接口装饰
-	generateInterfaceDecorations(document: vscode.TextDocument, 
-								 implementedInterfaces: Set<string>,
-								 interfaceLocationsMap: Map<string, Map<string, number>>): vscode.DecorationOptions[] {
+	// 生成接口装饰 - 修改以支持跨文件
+	async generateInterfaceDecorations(currentDocument: vscode.TextDocument, 
+									implementedInterfaces: Set<string>,
+									interfaceLocationsMap: Map<string, Map<string, { line: number, uri: vscode.Uri }>>): Promise<vscode.DecorationOptions[]> {
 		const interfaceDecorations: vscode.DecorationOptions[] = [];
+		
+		// 只为当前文档生成装饰
+		const currentDocUriString = currentDocument.uri.toString();
 		
 		for (const [interfaceName, methodLocations] of interfaceLocationsMap.entries()) {
 			if (implementedInterfaces.has(interfaceName)) {
 				// 为接口定义添加装饰
-				const interfaceLine = methodLocations.get('__interface_def__');
-				if (interfaceLine !== undefined) {
-					// const interfaceDefMarkdown = new vscode.MarkdownString();
-					// interfaceDefMarkdown.isTrusted = true;
-					// interfaceDefMarkdown.appendMarkdown(`**接口定义**: ${interfaceName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
-					
+				const interfaceDefLocation = methodLocations.get('__interface_def__');
+				if (interfaceDefLocation && interfaceDefLocation.uri.toString() === currentDocUriString) {
 					interfaceDecorations.push({
 						range: new vscode.Range(
-							new vscode.Position(interfaceLine, 0),
-							new vscode.Position(interfaceLine, 0)
-						),
-						// hoverMessage: interfaceDefMarkdown
+							new vscode.Position(interfaceDefLocation.line, 0),
+							new vscode.Position(interfaceDefLocation.line, 0)
+						)
 					});
 				}
 				
 				// 为接口方法添加装饰
-				for (const [methodName, methodLine] of methodLocations.entries()) {
+				for (const [methodName, methodLocation] of methodLocations.entries()) {
 					// 跳过接口定义特殊标记
 					if (methodName === '__interface_def__') {
 						continue;
 					}
 					
-					// const markdown = new vscode.MarkdownString();
-					// markdown.isTrusted = true;
-					// markdown.appendMarkdown(`**接口方法**: ${methodName}\n\n[➡️ 跳转到实现](command:editor.action.goToImplementation)`);
-					
-					interfaceDecorations.push({
-						range: new vscode.Range(
-							new vscode.Position(methodLine, 0),
-							new vscode.Position(methodLine, 0)
-						),
-						// hoverMessage: markdown
-					});
+					// 只为当前文档中的方法添加装饰
+					if (methodLocation.uri.toString() === currentDocUriString) {
+						interfaceDecorations.push({
+							range: new vscode.Range(
+								new vscode.Position(methodLocation.line, 0),
+								new vscode.Position(methodLocation.line, 0)
+							)
+						});
+					}
 				}
 			}
 		}
@@ -299,13 +415,16 @@ class DecorationGenerator {
 		return interfaceDecorations;
 	}
 	
-	// 生成实现装饰
-	generateImplementationDecorations(document: vscode.TextDocument, 
-									 implementedInterfaces: Set<string>,
-									 interfaceMethodsMap: Map<string, string[]>,
-									 structMethodsMap: Map<string, Map<string, number>>,
-									 structsMap: Map<string, Map<string, any>>): vscode.DecorationOptions[] {
+	// 生成实现装饰 - 修改以支持跨文件
+	async generateImplementationDecorations(currentDocument: vscode.TextDocument, 
+											implementedInterfaces: Set<string>,
+											interfaceMethodsMap: Map<string, string[]>,
+											structMethodsMap: Map<string, Map<string, { line: number, uri: vscode.Uri }>>,
+											structsMap: Map<string, Map<string, any>>): Promise<vscode.DecorationOptions[]> {
 		const implementationDecorations: vscode.DecorationOptions[] = [];
+		
+		// 只为当前文档生成装饰
+		const currentDocUriString = currentDocument.uri.toString();
 		
 		// 创建一个集合，存储所有实现了接口的方法
 		const interfaceImplementingMethods = new Set<string>();
@@ -322,19 +441,14 @@ class DecorationGenerator {
 		
 		// 为实现方法添加装饰
 		for (const [structName, methodsMap] of structMethodsMap.entries()) {
-			for (const [methodName, methodLine] of methodsMap.entries()) {
-				// 只为实现接口的方法添加装饰
-				if (interfaceImplementingMethods.has(methodName)) {
-					// const markdown = new vscode.MarkdownString();
-					// markdown.isTrusted = true;
-					// markdown.appendMarkdown(`**实现方法**: ${methodName}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
-					
+			for (const [methodName, methodLocation] of methodsMap.entries()) {
+				// 只为实现接口的方法添加装饰，且仅添加到当前文档中
+				if (interfaceImplementingMethods.has(methodName) && methodLocation.uri.toString() === currentDocUriString) {
 					implementationDecorations.push({
 						range: new vscode.Range(
-							new vscode.Position(methodLine, 0),
-							new vscode.Position(methodLine, 0)
-						),
-						// hoverMessage: markdown
+							new vscode.Position(methodLocation.line, 0),
+							new vscode.Position(methodLocation.line, 0)
+						)
 					});
 				}
 			}
@@ -348,36 +462,34 @@ class DecorationGenerator {
 				structName.toLowerCase().includes('dao')) {
 				
 				const structLine = structInfo.get('line');
-				// const structMarkdown = new vscode.MarkdownString();
-				// structMarkdown.isTrusted = true;
-				// structMarkdown.appendMarkdown(`**服务结构体**: ${structName}\n\n[🔍 查找引用](command:editor.action.goToReferences)`);
+				const structUri = structInfo.get('uri');
 				
-				implementationDecorations.push({
-					range: new vscode.Range(
-						new vscode.Position(structLine, 0),
-						new vscode.Position(structLine, 0)
-					),
-					// hoverMessage: structMarkdown
-				});
+				// 只为当前文档中的结构体添加装饰
+				if (structUri && structUri.toString() === currentDocUriString) {
+					implementationDecorations.push({
+						range: new vscode.Range(
+							new vscode.Position(structLine, 0),
+							new vscode.Position(structLine, 0)
+						)
+					});
+				}
 			}
 			
 			// 为引用接口类型的字段添加装饰
 			const fields = structInfo.get('fields');
 			for (const [fieldName, fieldInfo] of fields.entries()) {
-				const fieldType = fieldInfo.type;
 				const fieldLine = fieldInfo.line;
+				const fieldUri = fieldInfo.uri;
 				
-				// const fieldMarkdown = new vscode.MarkdownString();
-				// fieldMarkdown.isTrusted = true;
-				// fieldMarkdown.appendMarkdown(`**接口引用**: ${fieldType}\n\n[⬆️ 跳转到接口定义](command:editor.action.goToTypeDefinition)`);
-				
-				implementationDecorations.push({
-					range: new vscode.Range(
-						new vscode.Position(fieldLine, 0),
-						new vscode.Position(fieldLine, 0)
-					),
-					// hoverMessage: fieldMarkdown
-				});
+				// 只为当前文档中的字段添加装饰
+				if (fieldUri && fieldUri.toString() === currentDocUriString) {
+					implementationDecorations.push({
+						range: new vscode.Range(
+							new vscode.Position(fieldLine, 0),
+							new vscode.Position(fieldLine, 0)
+						)
+					});
+				}
 			}
 		}
 		
@@ -596,7 +708,7 @@ class IJumpExtension {
 	}
 	
 	// 更新装饰
-	private updateDecorations(editor: vscode.TextEditor) {
+	private async updateDecorations(editor: vscode.TextEditor) {
 		if (!editor || editor.document.languageId !== 'go') {
 			return;
 		}
@@ -609,109 +721,120 @@ class IJumpExtension {
 		const lineTypes = new Map<number, 'interface' | 'implementation'>();
 		const docDecoratedLines = new Set<number>();
 		
-		// 使用解析器获取信息
-		const interfaceNames = this.parser.getAllInterfaceNames(document);
-		const interfaceMethodsMap = this.parser.parseInterfaces(document);
-		const interfaceLocationsMap = this.parser.parseInterfaceLocations(document);
-		const structMethodsMap = this.parser.parseImplementations(document);
-		const structsMap = this.parser.parseStructs(document, interfaceNames);
-		
-		// 检查哪些接口被实现了
-		const implementedInterfaces = this.parser.checkInterfaceImplementations(
-			interfaceMethodsMap, 
-			structMethodsMap
-		);
-		
-		// 生成装饰
-		const interfaceDecorations = this.decorationGenerator.generateInterfaceDecorations(
-			document, 
-			implementedInterfaces, 
-			interfaceLocationsMap
-		);
-		
-		const implementationDecorations = this.decorationGenerator.generateImplementationDecorations(
-			document, 
-			implementedInterfaces, 
-			interfaceMethodsMap, 
-			structMethodsMap, 
-			structsMap
-		);
-		
-		// 填充方法映射和行类型信息
-		// 接口和接口方法
-		for (const [interfaceName, methodLocations] of interfaceLocationsMap.entries()) {
-			if (implementedInterfaces.has(interfaceName)) {
-				// 接口定义
-				const interfaceLine = methodLocations.get('__interface_def__');
-				if (interfaceLine !== undefined) {
-					methodMap.set(interfaceLine, interfaceName);
-					lineTypes.set(interfaceLine, 'interface');
-					docDecoratedLines.add(interfaceLine);
-				}
-				
-				// 接口方法
-				for (const [methodName, methodLine] of methodLocations.entries()) {
-					if (methodName !== '__interface_def__') {
-						methodMap.set(methodLine, methodName);
-						lineTypes.set(methodLine, 'interface');
-						docDecoratedLines.add(methodLine);
+		try {
+			// 使用解析器获取信息
+			const interfaceNames = await this.parser.getAllInterfaceNames(document);
+			const interfaceMethodsMap = await this.parser.parseInterfaces(document);
+			const interfaceLocationsMap = await this.parser.parseInterfaceLocations(document);
+			const structMethodsMap = await this.parser.parseImplementations(document);
+			const structsMap = await this.parser.parseStructs(document, interfaceNames);
+			
+			// 检查哪些接口被实现了
+			const implementedInterfaces = this.parser.checkInterfaceImplementations(
+				interfaceMethodsMap, 
+				structMethodsMap
+			);
+			
+			// 生成装饰
+			const interfaceDecorations = await this.decorationGenerator.generateInterfaceDecorations(
+				document, 
+				implementedInterfaces, 
+				interfaceLocationsMap
+			);
+			
+			const implementationDecorations = await this.decorationGenerator.generateImplementationDecorations(
+				document, 
+				implementedInterfaces, 
+				interfaceMethodsMap, 
+				structMethodsMap, 
+				structsMap
+			);
+			
+			// 填充方法映射和行类型信息
+			// 接口和接口方法
+			for (const [interfaceName, methodLocations] of interfaceLocationsMap.entries()) {
+				if (implementedInterfaces.has(interfaceName)) {
+					// 接口定义
+					const interfaceDefLocation = methodLocations.get('__interface_def__');
+					if (interfaceDefLocation && interfaceDefLocation.uri.toString() === docKey) {
+						methodMap.set(interfaceDefLocation.line, interfaceName);
+						lineTypes.set(interfaceDefLocation.line, 'interface');
+						docDecoratedLines.add(interfaceDefLocation.line);
+					}
+					
+					// 接口方法
+					for (const [methodName, methodLocation] of methodLocations.entries()) {
+						if (methodName !== '__interface_def__' && methodLocation.uri.toString() === docKey) {
+							methodMap.set(methodLocation.line, methodName);
+							lineTypes.set(methodLocation.line, 'interface');
+							docDecoratedLines.add(methodLocation.line);
+						}
 					}
 				}
 			}
-		}
-		
-		// 实现方法
-		const interfaceImplementingMethods = new Set<string>();
-		for (const [interfaceName, methods] of interfaceMethodsMap.entries()) {
-			if (implementedInterfaces.has(interfaceName)) {
-				for (const method of methods) {
-					interfaceImplementingMethods.add(method);
+			
+			// 实现方法
+			const interfaceImplementingMethods = new Set<string>();
+			for (const [interfaceName, methods] of interfaceMethodsMap.entries()) {
+				if (implementedInterfaces.has(interfaceName)) {
+					for (const method of methods) {
+						interfaceImplementingMethods.add(method);
+					}
 				}
-			}
-		}
-		
-		for (const [structName, methodsMap] of structMethodsMap.entries()) {
-			for (const [methodName, methodLine] of methodsMap.entries()) {
-				if (interfaceImplementingMethods.has(methodName)) {
-					methodMap.set(methodLine, methodName);
-					lineTypes.set(methodLine, 'implementation');
-					docDecoratedLines.add(methodLine);
-				}
-			}
-		}
-		
-		// 服务相关结构体和接口引用字段
-		for (const [structName, structInfo] of structsMap.entries()) {
-			if (structName.toLowerCase().includes('service') || 
-				structName.toLowerCase().includes('repository') ||
-				structName.toLowerCase().includes('store') ||
-				structName.toLowerCase().includes('dao')) {
-				
-				const structLine = structInfo.get('line');
-				methodMap.set(structLine, structName);
-				lineTypes.set(structLine, 'implementation');
-				docDecoratedLines.add(structLine);
 			}
 			
-			// 接口引用字段
-			const fields = structInfo.get('fields');
-			for (const [fieldName, fieldInfo] of fields.entries()) {
-				const fieldType = fieldInfo.type;
-				const fieldLine = fieldInfo.line;
-				
-				methodMap.set(fieldLine, fieldType);
-				lineTypes.set(fieldLine, 'implementation');
-				docDecoratedLines.add(fieldLine);
+			for (const [structName, methodsMap] of structMethodsMap.entries()) {
+				for (const [methodName, methodLocation] of methodsMap.entries()) {
+					if (interfaceImplementingMethods.has(methodName) && methodLocation.uri.toString() === docKey) {
+						methodMap.set(methodLocation.line, methodName);
+						lineTypes.set(methodLocation.line, 'implementation');
+						docDecoratedLines.add(methodLocation.line);
+					}
+				}
 			}
+			
+			// 服务相关结构体和接口引用字段
+			for (const [structName, structInfo] of structsMap.entries()) {
+				if (structName.toLowerCase().includes('service') || 
+					structName.toLowerCase().includes('repository') ||
+					structName.toLowerCase().includes('store') ||
+					structName.toLowerCase().includes('dao')) {
+					
+					const structLine = structInfo.get('line');
+					const structUri = structInfo.get('uri');
+					
+					if (structUri && structUri.toString() === docKey) {
+						methodMap.set(structLine, structName);
+						lineTypes.set(structLine, 'implementation');
+						docDecoratedLines.add(structLine);
+					}
+				}
+				
+				// 接口引用字段
+				const fields = structInfo.get('fields');
+				for (const [fieldName, fieldInfo] of fields.entries()) {
+					const fieldType = fieldInfo.type;
+					const fieldLine = fieldInfo.line;
+					const fieldUri = fieldInfo.uri;
+					
+					if (fieldUri && fieldUri.toString() === docKey) {
+						methodMap.set(fieldLine, fieldType);
+						lineTypes.set(fieldLine, 'implementation');
+						docDecoratedLines.add(fieldLine);
+					}
+				}
+			}
+			
+			// 更新缓存
+			this.cacheManager.updateMethodMap(docKey, methodMap);
+			this.cacheManager.updateLineTypeMap(docKey, lineTypes);
+			this.cacheManager.updateDecoratedLines(docKey, docDecoratedLines);
+			
+			// 应用装饰
+			this.decorationManager.applyDecorations(editor, interfaceDecorations, implementationDecorations);
+		} catch (error) {
+			console.error('更新装饰失败:', error);
 		}
-		
-		// 更新缓存
-		this.cacheManager.updateMethodMap(docKey, methodMap);
-		this.cacheManager.updateLineTypeMap(docKey, lineTypes);
-		this.cacheManager.updateDecoratedLines(docKey, docDecoratedLines);
-		
-		// 应用装饰
-		this.decorationManager.applyDecorations(editor, interfaceDecorations, implementationDecorations);
 	}
 }
 
