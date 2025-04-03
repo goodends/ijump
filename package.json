@@ -29,7 +29,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/ijump.git"
+    "url": "https://github.com/goodends/ijump.git"
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
