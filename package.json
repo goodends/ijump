@@ -1,8 +1,8 @@
 {
   "name": "ijump",
   "displayName": "IJump",
-  "description": "Go语言接口方法跳转到实现工具",
-  "version": "0.0.1",
+  "description": "Go语言接口与实现智能跳转工具，支持跨文件分析",
+  "version": "0.1.0",
   "publisher": "zhengxiaojun",
   "engines": {
     "vscode": "^1.96.0"
@@ -20,6 +20,10 @@
       {
         "command": "ijump.jumpToImplementation",
         "title": "Jump to Implementation"
+      },
+      {
+        "command": "ijump.jumpToInterface",
+        "title": "Jump to Interface Definition"
       }
     ]
   },
@@ -45,5 +49,13 @@
     "typescript": "^5.8.2",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1"
-  }
+  },
+  "keywords": [
+    "go",
+    "golang",
+    "interface",
+    "navigation",
+    "productivity",
+    "code-navigation"
+  ]
 }
