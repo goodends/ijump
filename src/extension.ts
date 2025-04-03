@@ -672,26 +672,22 @@ class DecorationGenerator {
 			
 			// 通过检查是否有与该结构体关联的实现方法来确定
 			for (const [method, location] of structMethodsMap.get(structName) || new Map()) {
-				if (interfaceImplementingMethods.has(method)) {
+				if (method !== '__struct_def__' && interfaceImplementingMethods.has(method)) {
 					implementsAnyInterface = true;
 					break;
 				}
 			}
 			
-			// 如果结构体实现了接口，或者是特殊命名的结构体，添加装饰
-			if (implementsAnyInterface || 
-				structName.toLowerCase().includes('service') || 
-				structName.toLowerCase().includes('repository') ||
-				structName.toLowerCase().includes('store') ||
-				structName.toLowerCase().includes('dao') ||
-				structName.toLowerCase().includes('cache') ||
-				structName.toLowerCase().includes('manager') ||
-				structName.toLowerCase().includes('limiter')) {
-				
+			// 检查是否有显式声明的接口实现关系
+			if (structInfo.has('implementsInterfaces') && structInfo.get('implementsInterfaces').size > 0) {
+				implementsAnyInterface = true;
+			}
+			
+			// 只为真正实现了接口的结构体添加装饰，不再基于名称匹配
+			if (implementsAnyInterface) {
 				const structLine = structInfo.get('line');
 				const structUri = structInfo.get('uri');
 				
-				// 只为当前文档中的结构体添加装饰
 				if (structUri && structUri.toString() === currentDocUriString) {
 					implementationDecorations.push({
 						range: new vscode.Range(
@@ -1025,22 +1021,19 @@ class IJumpExtension {
 				
 				// 通过检查是否有与该结构体关联的实现方法来确定
 				for (const [method, location] of structMethodsMap.get(structName) || new Map()) {
-					if (interfaceImplementingMethods.has(method)) {
+					if (method !== '__struct_def__' && interfaceImplementingMethods.has(method)) {
 						implementsAnyInterface = true;
 						break;
 					}
 				}
 				
-				// 如果结构体实现了接口，或者是特殊命名的结构体，添加装饰
-				if (implementsAnyInterface || 
-					structName.toLowerCase().includes('service') || 
-					structName.toLowerCase().includes('repository') ||
-					structName.toLowerCase().includes('store') ||
-					structName.toLowerCase().includes('dao') ||
-					structName.toLowerCase().includes('cache') ||
-					structName.toLowerCase().includes('manager') ||
-					structName.toLowerCase().includes('limiter')) {
-					
+				// 检查是否有显式声明的接口实现关系
+				if (structInfo.has('implementsInterfaces') && structInfo.get('implementsInterfaces').size > 0) {
+					implementsAnyInterface = true;
+				}
+				
+				// 只为真正实现了接口的结构体添加装饰，不再基于名称匹配
+				if (implementsAnyInterface) {
 					const structLine = structInfo.get('line');
 					const structUri = structInfo.get('uri');
 					
