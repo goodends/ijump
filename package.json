@@ -1,8 +1,8 @@
 {
   "name": "ijump",
-  "displayName": "IJump - Go语言接口与实现快速跳转 （GOJump）",
-  "description": "Go语言接口与实现智能跳转工具，支持跨文件分析",
-  "version": "1.0.0",
+  "displayName": "IJump - Go语言接口与实现快速跳转 （Go Jump gojump）",
+  "description": "Go语言接口与实现智能跳转工具，支持跨文件分析和精确的代码导航",
+  "version": "2.0.0",
   "publisher": "zhengxiaojun",
   "engines": {
     "vscode": "^1.96.0"
@@ -56,6 +56,10 @@
     "interface",
     "navigation",
     "productivity",
-    "code-navigation"
+    "code-navigation",
+    "jump",
+    "gojump",
+    "go-interface",
+    "interface-implementation"
   ]
 }
