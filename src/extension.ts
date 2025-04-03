@@ -168,10 +168,12 @@ class GoCodeParser {
 					}
 					
 					// 匹配方法定义: 函数名(参数)返回值
-					const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\([^)]*\)/);
+					// 改进的正则表达式，匹配更多种Go方法定义模式
+					const methodMatch = line.match(/\s*([A-Za-z0-9_]+)\s*\(.*\)(?:\s*\(.*\)|\s+[\*\[\]A-Za-z0-9_,\s]+|\s*)?(?:\s*$)/);
 					if (methodMatch) {
 						const methodName = methodMatch[1];
 						interfaceMethodsMap.get(interfaceName)?.push(methodName);
+						console.log(`接口 ${interfaceName} 定义了方法 ${methodName}`);
 					}
 				}
 			}
@@ -235,7 +237,9 @@ class GoCodeParser {
 		
 		for (const fileInfo of packageFiles) {
 			const text = fileInfo.content;
-			const implementationRegex = /func\s+\(\w+\s+\*?(\w+)\)\s+([A-Za-z0-9_]+)\s*\([^)]*\)/g;
+			// 优化正则表达式，使其能匹配更多种方法实现格式
+			// 匹配格式: func (receiver *Type) MethodName(params) (returns) { ... }
+			const implementationRegex = /func\s+\(\s*\w+\s+\*?(\w+)\s*\)\s+([A-Za-z0-9_]+)\s*\([^)]*\)/g;
 			let implMatch;
 			
 			while ((implMatch = implementationRegex.exec(text)) !== null) {
@@ -252,6 +256,31 @@ class GoCodeParser {
 					line: methodLine, 
 					uri: fileInfo.uri 
 				});
+				
+				console.log(`找到方法实现: ${receiverType}.${methodName} 在行 ${methodLine}`);
+			}
+			
+			// 查找结构体定义，确保所有结构体都被记录
+			const structDefRegex = /type\s+(\w+)\s+struct\s*\{/g;
+			let structDefMatch;
+			
+			while ((structDefMatch = structDefRegex.exec(text)) !== null) {
+				const structName = structDefMatch[1];
+				const structPos = this.getPositionAt(fileInfo, structDefMatch.index);
+				const structLine = structPos.line;
+				
+				// 确保结构体已经在映射中
+				if (!structMethodsMap.has(structName)) {
+					structMethodsMap.set(structName, new Map());
+				}
+				
+				// 在映射中添加结构体定义位置
+				structMethodsMap.get(structName)?.set('__struct_def__', {
+					line: structLine,
+					uri: fileInfo.uri
+				});
+				
+				console.log(`找到结构体定义: ${structName} 在行 ${structLine}`);
 			}
 		}
 		
@@ -276,7 +305,7 @@ class GoCodeParser {
 				const structInfo = new Map<string, any>();
 				structInfo.set('line', structLine);
 				structInfo.set('uri', fileInfo.uri);
-				structInfo.set('fields', new Map<string, {type: string, line: number, uri: vscode.Uri}>());
+				structInfo.set('fields', new Map<string, {type: string, line: number, uri: vscode.Uri, embedded: boolean}>());
 				
 				const structContent = structMatch[2];
 				const contentLines = structContent.split('\n');
@@ -289,19 +318,46 @@ class GoCodeParser {
 						continue;
 					}
 					
-					// 匹配结构体字段: 字段名 类型
-					const fieldMatch = line.match(/\s*(\w+)?\s+([A-Za-z0-9_]+)/);
-					if (fieldMatch) {
-						const fieldName = fieldMatch[1] || fieldMatch[2];
-						const fieldType = fieldMatch[2];
+					// 处理嵌入字段的情况：字段没有名称，直接是类型名（可能带*号）
+					// 例如: UserRepository 或 *ServiceImpl
+					const embeddedFieldMatch = line.match(/^\s*(\*?\w+)\s*$/);
+					if (embeddedFieldMatch) {
+						// 移除可能的指针标记(*)并获取类型名
+						const rawType = embeddedFieldMatch[1];
+						const fieldType = rawType.startsWith('*') ? rawType.substring(1) : rawType;
 						
-						// 只记录引用接口类型的字段
+						// 使用类型名作为字段名（嵌入字段）
+						structInfo.get('fields').set(fieldType, {
+							type: fieldType,
+							line: lineOffset,
+							uri: fileInfo.uri,
+							embedded: true
+						});
+						console.log(`结构体 ${structName} 嵌入了类型 ${fieldType}`);
+						lineOffset++;
+						continue;
+					}
+					
+					// 处理普通字段: 字段名 类型
+					// 例如: repo Repository 或 service *Service
+					const fieldMatch = line.match(/\s*(\w+)\s+(\*?\w+)/);
+					if (fieldMatch) {
+						const fieldName = fieldMatch[1];
+						// 移除可能的指针标记(*)
+						const rawType = fieldMatch[2];
+						const fieldType = rawType.startsWith('*') ? rawType.substring(1) : rawType;
+						
+						// 添加字段，无论它是否是接口类型
+						structInfo.get('fields').set(fieldName, {
+							type: fieldType,
+							line: lineOffset,
+							uri: fileInfo.uri,
+							embedded: false
+						});
+						
+						// 如果是已知接口类型，记录特殊标记
 						if (interfaceNames.has(fieldType)) {
-							structInfo.get('fields').set(fieldName, {
-								type: fieldType,
-								line: lineOffset,
-								uri: fileInfo.uri
-							});
+							console.log(`结构体 ${structName} 字段 ${fieldName} 引用了接口 ${fieldType}`);
 						}
 					}
 					
@@ -309,6 +365,29 @@ class GoCodeParser {
 				}
 				
 				structsMap.set(structName, structInfo);
+			}
+			
+			// 查找结构体实现接口的注释标记
+			// 例如：// ensure redisRateLimiter implements RateLimiter
+			// 或: // 确保 redisRateLimiter 实现 RateLimiter
+			const implementsRegex = /\/\/\s*(?:ensure|确保)\s+(\w+)\s+(?:implements|实现)\s+(\w+)/g;
+			let implementsMatch;
+			
+			while ((implementsMatch = implementsRegex.exec(text)) !== null) {
+				const structName = implementsMatch[1];
+				const interfaceName = implementsMatch[2];
+				
+				// 如果结构体已经在映射中，添加实现接口标记
+				if (structsMap.has(structName)) {
+					const structInfo = structsMap.get(structName)!;
+					if (!structInfo.has('implementsInterfaces')) {
+						structInfo.set('implementsInterfaces', new Set<string>());
+					}
+					
+					const implementsInterfaces = structInfo.get('implementsInterfaces');
+					implementsInterfaces.add(interfaceName);
+					console.log(`通过注释标记找到 ${structName} 实现了接口 ${interfaceName}`);
+				}
 			}
 		}
 		
@@ -344,22 +423,153 @@ class GoCodeParser {
 	
 	// 检查结构体是否实现了接口 - 跨文件版本
 	checkInterfaceImplementations(interfaceMethodsMap: Map<string, string[]>, 
-								structMethodsMap: Map<string, Map<string, any>>): Set<string> {
+								structMethodsMap: Map<string, Map<string, any>>,
+								structsMap?: Map<string, Map<string, any>>): Set<string> {
 		const implementedInterfaces = new Set<string>();
 		
-		for (const [interfaceName, interfaceMethods] of interfaceMethodsMap.entries()) {
-			interfaceLoop: for (const [structName, structMethods] of structMethodsMap.entries()) {
-				// 检查结构体是否实现了接口所有方法
-				const allMethodsImplemented = interfaceMethods.every(method => 
-					structMethods.has(method)
-				);
-				
-				if (allMethodsImplemented && interfaceMethods.length > 0) {
-					implementedInterfaces.add(interfaceName);
-					console.log(`接口 ${interfaceName} 被 ${structName} 实现`);
-					break interfaceLoop;
+		// 保存每个接口被哪些结构体实现的映射
+		const interfaceImplementations = new Map<string, Set<string>>();
+		
+		// 添加调试信息
+		console.log(`检查接口实现关系 - 接口数量: ${interfaceMethodsMap.size}, 结构体数量: ${structMethodsMap.size}`);
+		
+		// 第1步：处理显式声明的接口实现关系（通过注释标记）
+		if (structsMap) {
+			for (const [structName, structInfo] of structsMap.entries()) {
+				if (structInfo.has('implementsInterfaces')) {
+					const implementsInterfaces = structInfo.get('implementsInterfaces');
+					for (const interfaceName of implementsInterfaces) {
+						if (interfaceMethodsMap.has(interfaceName)) {
+							implementedInterfaces.add(interfaceName);
+							
+							// 记录实现关系
+							if (!interfaceImplementations.has(interfaceName)) {
+								interfaceImplementations.set(interfaceName, new Set<string>());
+							}
+							interfaceImplementations.get(interfaceName)?.add(structName);
+							
+							console.log(`通过注释标记确认 ${structName} 实现了接口 ${interfaceName}`);
+						}
+					}
 				}
 			}
+		}
+		
+		// 第2步：检查方法名和数量匹配
+		for (const [interfaceName, interfaceMethods] of interfaceMethodsMap.entries()) {
+			// 如果已经确定了接口的实现，跳过
+			if (implementedInterfaces.has(interfaceName)) {
+				continue;
+			}
+			
+			console.log(`检查接口: ${interfaceName}, 方法数量: ${interfaceMethods.length}`);
+			
+			// 跳过空接口
+			if (interfaceMethods.length === 0) {
+				console.log(`接口 ${interfaceName} 没有方法，跳过`);
+				continue;
+			}
+			
+			// 对每个结构体检查方法匹配度
+			for (const [structName, structMethods] of structMethodsMap.entries()) {
+				// 跳过特殊标记，如 __struct_def__
+				if (structName.startsWith('__') && structName.endsWith('__')) {
+					continue;
+				}
+				
+				// 计算方法匹配数
+				let implementedMethodCount = 0;
+				const structMethodNames = new Set<string>();
+				
+				// 收集结构体方法名
+				for (const methodName of structMethods.keys()) {
+					if (!methodName.startsWith('__')) {  // 跳过特殊标记
+						structMethodNames.add(methodName);
+					}
+				}
+				
+				// 检查接口方法是否都被实现
+				for (const method of interfaceMethods) {
+					if (structMethodNames.has(method)) {
+						implementedMethodCount++;
+					}
+				}
+				
+				// 计算实现率
+				const implementationRate = interfaceMethods.length > 0 ? 
+					implementedMethodCount / interfaceMethods.length : 0;
+				
+				// 完全匹配: 100% 的方法都实现了
+				const perfectMatch = implementationRate === 1.0;
+				
+				// 高匹配: 至少 80% 的方法都实现了
+				const highMatch = implementationRate >= 0.8;
+				
+				// 如果是完全匹配或高匹配
+				if (perfectMatch || highMatch) {
+					implementedInterfaces.add(interfaceName);
+					
+					// 记录实现关系
+					if (!interfaceImplementations.has(interfaceName)) {
+						interfaceImplementations.set(interfaceName, new Set<string>());
+					}
+					interfaceImplementations.get(interfaceName)?.add(structName);
+					
+					console.log(`${structName} 实现了接口 ${interfaceName}，匹配率: ${(implementationRate * 100).toFixed(2)}%`);
+					
+					// 如果是完全匹配，无需继续检查其他结构体
+					if (perfectMatch) {
+						break;
+					}
+				}
+			}
+		}
+		
+		// 第3步：检查可能的间接实现（通过组合或嵌入其他实现接口的结构体）
+		if (structsMap) {
+			let hasNewImplementation = true;
+			// 最多迭代3次，避免可能的循环依赖
+			let iterations = 0;
+			
+			while (hasNewImplementation && iterations < 3) {
+				hasNewImplementation = false;
+				iterations++;
+				
+				// 遍历所有结构体，查找其字段中是否引用了已知实现接口的类型
+				for (const [structName, structInfo] of structsMap.entries()) {
+					const fields = structInfo.get('fields');
+					
+					for (const [fieldName, fieldInfo] of fields.entries()) {
+						const fieldType = fieldInfo.type;
+						
+						// 遍历所有已实现的接口
+						for (const [interfaceName, implementingStructs] of interfaceImplementations.entries()) {
+							// 如果字段类型是已知实现该接口的结构体之一，则该结构体也间接实现了接口
+							if (implementingStructs.has(fieldType) || interfaceName === fieldType) {
+								// 如果这是新发现的实现关系
+								if (!implementedInterfaces.has(interfaceName) || 
+									!interfaceImplementations.get(interfaceName)?.has(structName)) {
+									
+									implementedInterfaces.add(interfaceName);
+									
+									if (!interfaceImplementations.has(interfaceName)) {
+										interfaceImplementations.set(interfaceName, new Set<string>());
+									}
+									interfaceImplementations.get(interfaceName)?.add(structName);
+									
+									console.log(`${structName} 通过组合 ${fieldType} 间接实现了接口 ${interfaceName}`);
+									hasNewImplementation = true;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		// 输出最终的接口实现结果
+		for (const [interfaceName, implementingStructs] of interfaceImplementations.entries()) {
+			console.log(`接口 ${interfaceName} 被以下结构体实现: ${Array.from(implementingStructs).join(', ')}`);
 		}
 		
 		return implementedInterfaces;
@@ -455,14 +665,28 @@ class DecorationGenerator {
 			}
 		}
 		
-		// 为服务相关结构体添加装饰
+		// 为实现接口的结构体添加装饰
 		for (const [structName, structInfo] of structsMap.entries()) {
-			if (structName.toLowerCase().includes('service') || 
+			// 检查该结构体是否实现了任何接口
+			let implementsAnyInterface = false;
+			
+			// 通过检查是否有与该结构体关联的实现方法来确定
+			for (const [method, location] of structMethodsMap.get(structName) || new Map()) {
+				if (interfaceImplementingMethods.has(method)) {
+					implementsAnyInterface = true;
+					break;
+				}
+			}
+			
+			// 如果结构体实现了接口，或者是特殊命名的结构体，添加装饰
+			if (implementsAnyInterface || 
+				structName.toLowerCase().includes('service') || 
 				structName.toLowerCase().includes('repository') ||
 				structName.toLowerCase().includes('store') ||
 				structName.toLowerCase().includes('dao') ||
 				structName.toLowerCase().includes('cache') ||
-				structName.toLowerCase().includes('manager')) {
+				structName.toLowerCase().includes('manager') ||
+				structName.toLowerCase().includes('limiter')) {
 				
 				const structLine = structInfo.get('line');
 				const structUri = structInfo.get('uri');
@@ -478,18 +702,15 @@ class DecorationGenerator {
 				}
 			}
 			
-			// 为引用接口类型的字段添加装饰 - 改为接口引用装饰
+			// 为嵌入字段添加装饰（只有嵌入字段可能对接口实现有影响）
 			const fields = structInfo.get('fields');
 			for (const [fieldName, fieldInfo] of fields.entries()) {
-				const fieldLine = fieldInfo.line;
-				const fieldUri = fieldInfo.uri;
-				
-				// 只为当前文档中的字段添加装饰
-				if (fieldUri && fieldUri.toString() === currentDocUriString) {
+				// 只为嵌入字段和当前文档中的字段添加装饰
+				if (fieldInfo.embedded && fieldInfo.uri.toString() === currentDocUriString) {
 					interfaceReferenceDecorations.push({
 						range: new vscode.Range(
-							new vscode.Position(fieldLine, 0),
-							new vscode.Position(fieldLine, 0)
+							new vscode.Position(fieldInfo.line, 0),
+							new vscode.Position(fieldInfo.line, 0)
 						)
 					});
 				}
@@ -735,7 +956,8 @@ class IJumpExtension {
 			// 检查哪些接口被实现了
 			const implementedInterfaces = this.parser.checkInterfaceImplementations(
 				interfaceMethodsMap, 
-				structMethodsMap
+				structMethodsMap,
+				structsMap
 			);
 			
 			// 生成装饰
@@ -796,14 +1018,28 @@ class IJumpExtension {
 				}
 			}
 			
-			// 服务相关结构体和接口引用字段
+			// 结构体和嵌入字段
 			for (const [structName, structInfo] of structsMap.entries()) {
-				if (structName.toLowerCase().includes('service') || 
+				// 检查该结构体是否实现了任何接口
+				let implementsAnyInterface = false;
+				
+				// 通过检查是否有与该结构体关联的实现方法来确定
+				for (const [method, location] of structMethodsMap.get(structName) || new Map()) {
+					if (interfaceImplementingMethods.has(method)) {
+						implementsAnyInterface = true;
+						break;
+					}
+				}
+				
+				// 如果结构体实现了接口，或者是特殊命名的结构体，添加装饰
+				if (implementsAnyInterface || 
+					structName.toLowerCase().includes('service') || 
 					structName.toLowerCase().includes('repository') ||
 					structName.toLowerCase().includes('store') ||
 					structName.toLowerCase().includes('dao') ||
 					structName.toLowerCase().includes('cache') ||
-					structName.toLowerCase().includes('manager')) {
+					structName.toLowerCase().includes('manager') ||
+					structName.toLowerCase().includes('limiter')) {
 					
 					const structLine = structInfo.get('line');
 					const structUri = structInfo.get('uri');
@@ -815,17 +1051,13 @@ class IJumpExtension {
 					}
 				}
 				
-				// 接口引用字段
+				// 只处理嵌入字段
 				const fields = structInfo.get('fields');
 				for (const [fieldName, fieldInfo] of fields.entries()) {
-					const fieldType = fieldInfo.type;
-					const fieldLine = fieldInfo.line;
-					const fieldUri = fieldInfo.uri;
-					
-					if (fieldUri && fieldUri.toString() === docKey) {
-						methodMap.set(fieldLine, fieldType);
-						lineTypes.set(fieldLine, 'interface');
-						docDecoratedLines.add(fieldLine);
+					if (fieldInfo.embedded && fieldInfo.uri.toString() === docKey) {
+						methodMap.set(fieldInfo.line, fieldInfo.type);
+						lineTypes.set(fieldInfo.line, 'interface');
+						docDecoratedLines.add(fieldInfo.line);
 					}
 				}
 			}
