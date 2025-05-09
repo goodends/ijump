@@ -85,7 +85,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, token string) (*TokenInf
 有两种方法安装此扩展:
 
 1. 在 VS Code 扩展市场中搜索 "IJump"，然后点击安装
-2. 或者在命令行中运行: `code --install-extension ijump-2.0.1.vsix`
+2. 或者在命令行中运行: `code --install-extension ijump-3.0.1.vsix`
 
 ## 要求
 
@@ -104,6 +104,10 @@ func (s *AuthService) RefreshToken(ctx context.Context, token string) (*TokenInf
 如果您发现任何问题，请在 GitHub 仓库中提交 issue。
 
 ## 发布说明
+
+### 3.1.1 (2025-05-09)
+
+- **改进**: 使用了标准AST解析器
 
 ### 2.0.1 (2024-04-04)
 
