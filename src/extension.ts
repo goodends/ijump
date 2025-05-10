@@ -247,7 +247,8 @@ class IJumpExtension {
 	private decorationGenerator: DecorationGenerator;
 	private cacheManager: CacheManager;
 	private updateThrottleTimer: NodeJS.Timeout | null = null;
-	private throttleDelay: number = 1000; // 1秒节流延迟
+	private throttleDelay: number = 100; // 减少到100毫秒节流延迟
+	private lastAnalyzedFile: string = ''; // 记录上次解析的文件路径
 	
 	constructor(private context: vscode.ExtensionContext) {
 		this.parser = new GoAstParser(context.extensionPath);
@@ -257,6 +258,7 @@ class IJumpExtension {
 		
 		this.registerCommands();
 		this.registerEventListeners();
+		this.registerFileWatcher();
 	}
 	
 	// 注册命令
@@ -274,6 +276,19 @@ class IJumpExtension {
 				await this.jumpToImplementation(uri, line);
 			})
 		);
+		
+		// 添加清除缓存命令
+		this.context.subscriptions.push(
+			vscode.commands.registerCommand('ijump.clearCache', () => {
+				this.parser.clearCache();
+				vscode.window.showInformationMessage('IJump: 已清除所有缓存');
+				
+				// 如果当前有活动编辑器，更新装饰
+				if (vscode.window.activeTextEditor) {
+					this.throttleUpdateDecorations(vscode.window.activeTextEditor);
+				}
+			})
+		);
 	}
 	
 	// 注册事件监听器
@@ -281,18 +296,26 @@ class IJumpExtension {
 		// 监听编辑器变化
 		this.context.subscriptions.push(
 			vscode.window.onDidChangeActiveTextEditor(editor => {
-				if (editor) {
-					this.throttleUpdateDecorations(editor);
+				if (editor && editor.document.languageId === 'go') {
+					// 只在切换到不同文件时触发更新
+					if (this.lastAnalyzedFile !== editor.document.uri.fsPath) {
+						// 立即更新，不使用节流
+						this.updateDecorations(editor);
+						this.lastAnalyzedFile = editor.document.uri.fsPath;
+					}
 				}
 			})
 		);
 
-		// 监听文档变化
+		// 监听文档保存 - 只在保存Go文件时更新，而不是每次编辑
 		this.context.subscriptions.push(
-			vscode.workspace.onDidChangeTextDocument(event => {
+			vscode.workspace.onDidSaveTextDocument(document => {
 				const editor = vscode.window.activeTextEditor;
-				if (editor && event.document === editor.document) {
-					this.throttleUpdateDecorations(editor);
+				if (editor && document.languageId === 'go' && document === editor.document) {
+					// 清除保存文件所在包的缓存
+					this.parser.clearCache(document.uri.fsPath);
+					// 立即更新，不使用节流
+					this.updateDecorations(editor);
 				}
 			})
 		);
@@ -305,10 +328,49 @@ class IJumpExtension {
 		);
 	}
 	
+	// 监视Go文件变化
+	private registerFileWatcher() {
+		// 创建Go文件变更监视器
+		const goFileWatcher = vscode.workspace.createFileSystemWatcher('**/*.go');
+		
+		// 监听文件创建
+		this.context.subscriptions.push(
+			goFileWatcher.onDidCreate(uri => {
+				// 新文件创建时清除所在包的缓存
+				this.parser.clearCache(uri.fsPath);
+				
+				// 检查是否需要更新当前编辑器装饰
+				const editor = vscode.window.activeTextEditor;
+				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
+					this.throttleUpdateDecorations(editor);
+				}
+			})
+		);
+		
+		// 监听文件删除
+		this.context.subscriptions.push(
+			goFileWatcher.onDidDelete(uri => {
+				// 文件删除时清除所在包的缓存
+				this.parser.clearCache(uri.fsPath);
+				
+				// 检查是否需要更新当前编辑器装饰
+				const editor = vscode.window.activeTextEditor;
+				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
+					this.throttleUpdateDecorations(editor);
+				}
+			})
+		);
+		
+		// 添加到订阅列表
+		this.context.subscriptions.push(goFileWatcher);
+	}
+	
 	// 初始化
 	initialize() {
-		if (vscode.window.activeTextEditor) {
-			this.throttleUpdateDecorations(vscode.window.activeTextEditor);
+		if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'go') {
+			// 立即更新，不使用节流
+			this.updateDecorations(vscode.window.activeTextEditor);
+			this.lastAnalyzedFile = vscode.window.activeTextEditor.document.uri.fsPath;
 		}
 	}
 	
@@ -422,7 +484,7 @@ class IJumpExtension {
 			clearTimeout(this.updateThrottleTimer);
 		}
 		
-		// 设置新的延迟更新
+		// 设置新的延迟更新，采用更短的延迟时间
 		this.updateThrottleTimer = setTimeout(() => {
 			this.updateDecorations(editor);
 			this.updateThrottleTimer = null;

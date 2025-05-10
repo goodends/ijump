@@ -65,8 +65,12 @@ export interface ImplementationInfo {
 export class GoAstParser {
     private parserPath: string;
     private parseCache = new Map<string, GoAstResult>();
-    private cacheTimeToLive: number = 300000; // 增加到5分钟缓存
+    private fileCache = new Map<string, GoAstResult>(); // 文件级别缓存，用于快速访问
+    private packageCache = new Map<string, string>(); // 文件路径到包路径的映射
+    private cacheTimeToLive: number = 300000; // 5分钟缓存
+    private fileCacheTimeToLive: number = 30000; // 30秒文件缓存
     private cacheTimes = new Map<string, number>();
+    private fileCacheTimes = new Map<string, number>();
     private isParserReady: boolean = false;
 
     constructor(extensionPath: string) {
@@ -108,25 +112,53 @@ export class GoAstParser {
     }
 
     /**
-     * 解析Go文件及其相关包
+     * 获取包路径 - 提取文件所在目录路径
+     */
+    private getPackagePath(filePath: string): string {
+        return path.dirname(filePath);
+    }
+
+    /**
+     * 解析Go文件及其相关包，优先使用文件缓存，提高显示速度
      */
     public async parseGoFile(filePath: string): Promise<GoAstResult> {
         const now = Date.now();
-        const cacheKey = filePath;
-
-        // 检查缓存
+        
+        // 1. 首先尝试使用文件级别缓存 - 快速路径
+        if (this.fileCache.has(filePath)) {
+            const cacheTime = this.fileCacheTimes.get(filePath) || 0;
+            if (now - cacheTime < this.fileCacheTimeToLive) {
+                console.log(`使用文件级缓存: ${filePath}`);
+                return this.fileCache.get(filePath)!;
+            }
+        }
+        
+        // 2. 尝试包级别缓存 - 中等路径
+        const packagePath = this.getPackagePath(filePath);
+        const cacheKey = packagePath;
+        
+        // 记录文件到包的映射
+        this.packageCache.set(filePath, packagePath);
+        
         if (this.parseCache.has(cacheKey)) {
             const cacheTime = this.cacheTimes.get(cacheKey) || 0;
             if (now - cacheTime < this.cacheTimeToLive) {
-                console.log(`使用缓存的Go解析结果: ${filePath}`);
-                return this.parseCache.get(cacheKey)!;
+                const result = this.parseCache.get(cacheKey)!;
+                
+                // 更新文件级缓存，为下次更快访问
+                this.fileCache.set(filePath, result);
+                this.fileCacheTimes.set(filePath, now);
+                
+                console.log(`使用包级缓存: ${packagePath} 对文件: ${filePath}`);
+                return result;
             }
         }
 
+        // 3. 没有有效缓存，解析文件 - 慢路径
         try {
-            console.log(`开始解析Go文件: ${filePath}`);
+            console.log(`解析: ${filePath}`);
 
-            // 确保解析器准备就绪
+            // 确保解析器就绪
             if (!await this.ensureParserReady()) {
                 throw new Error('Go解析器未就绪');
             }
@@ -149,29 +181,61 @@ export class GoAstParser {
                     
                     // 检查是否找到了包信息
                     const packageCount = Object.keys(result.packages).length;
-                    console.log(`解析到 ${packageCount} 个包`);
                     
-                    // 更新缓存
-                    this.parseCache.set(cacheKey, result);
-                    this.cacheTimes.set(cacheKey, now);
+                    if (packageCount > 0) {
+                        // 更新包级缓存
+                        this.parseCache.set(cacheKey, result);
+                        this.cacheTimes.set(cacheKey, now);
+                        
+                        // 同时更新文件级缓存
+                        this.fileCache.set(filePath, result);
+                        this.fileCacheTimes.set(filePath, now);
+                        
+                        console.log(`解析成功，已缓存`);
+                    } else {
+                        console.warn(`未找到包信息: ${packagePath}`);
+                    }
     
-                    console.log(`成功解析Go文件: ${filePath}`);
                     return result;
                 } catch (jsonError) {
-                    console.error('JSON解析失败:', jsonError);
-                    throw new Error(`无法解析Go解析器的输出: ${jsonError}`);
+                    console.error('JSON解析失败');
+                    throw new Error(`无法解析Go解析器的输出`);
                 }
             } catch (execError: any) {
-                console.error('执行Go解析器失败:', execError.message);
-                throw new Error(`执行Go解析器失败: ${execError.message}`);
+                console.error('执行Go解析器失败');
+                throw new Error(`执行Go解析器失败`);
             }
         } catch (error: any) {
-            const errorMsg = `解析Go文件失败: ${filePath}, ${error.message || error}`;
+            const errorMsg = `解析失败: ${filePath}`;
             console.error(errorMsg);
             // 返回空结果而不是抛出异常
             return {
                 packages: {}
             };
+        }
+    }
+
+    /**
+     * 清除特定文件或包的缓存
+     */
+    public clearCache(filePath?: string): void {
+        if (filePath) {
+            // 清除文件缓存
+            this.fileCache.delete(filePath);
+            this.fileCacheTimes.delete(filePath);
+            
+            // 清除包缓存
+            const packagePath = this.packageCache.get(filePath) || this.getPackagePath(filePath);
+            this.parseCache.delete(packagePath);
+            this.cacheTimes.delete(packagePath);
+            console.log(`已清除缓存: ${filePath}`);
+        } else {
+            // 清除所有缓存
+            this.fileCache.clear();
+            this.fileCacheTimes.clear();
+            this.parseCache.clear();
+            this.cacheTimes.clear();
+            console.log('已清除所有缓存');
         }
     }
 

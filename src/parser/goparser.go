@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // 接口方法信息
@@ -259,23 +258,12 @@ func parseDirectory(dirPath string) (ParseResult, error) {
 		return result, err
 	}
 
-	// 查找相邻的Go文件和目录 (仅在同一级目录中查找，不再递归整个项目)
-	// 这样可以处理分散在同一个包中的多个文件，而不会扫描整个项目
-	files, err := os.ReadDir(dirPath)
-	if err == nil {
-		for _, file := range files {
-			if file.IsDir() {
-				// 检查目录名是否合法（非隐藏目录）
-				if !strings.HasPrefix(file.Name(), ".") {
-					// 检查是否有.go文件
-					subDirPath := filepath.Join(dirPath, file.Name())
-					goFiles, err := filepath.Glob(filepath.Join(subDirPath, "*.go"))
-					if err == nil && len(goFiles) > 0 {
-						// 只处理包含Go文件的直接子目录
-						_ = processDir(subDirPath)
-					}
-				}
-			}
+	// 如果结果为空，尝试扫描相邻目录
+	if len(result.Packages) == 0 {
+		parentDir := filepath.Dir(dirPath)
+		if parentDir != dirPath {
+			// 处理父目录，尝试查找包
+			_ = processDir(parentDir)
 		}
 	}
 
