@@ -1,6 +1,9 @@
 .vscode/**
 .vscode-test/**
 src/**
+!src/parser/
+!src/parser/parser
+!src/parser/goparser.go
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md

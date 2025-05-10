@@ -3,6 +3,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { GoAstParser } from './goAstParser';
+import * as fs from 'fs';
 
 // 定义接口用于记录方法信息
 interface MethodInfo {
@@ -261,117 +262,85 @@ class IJumpExtension {
 		this.registerFileWatcher();
 	}
 	
-	// 注册命令
-	private registerCommands() {
-		// 跳转到接口方法的命令
-		this.context.subscriptions.push(
-			vscode.commands.registerCommand('ijump.jumpToInterface', async (uri: vscode.Uri, line: number) => {
-				await this.jumpToInterface(uri, line);
-			})
-		);
-
-		// 跳转到实现的命令
-		this.context.subscriptions.push(
-			vscode.commands.registerCommand('ijump.jumpToImplementation', async (uri: vscode.Uri, line: number) => {
-				await this.jumpToImplementation(uri, line);
-			})
-		);
+	/**
+	 * 检查预编译解析器是否存在
+	 */
+	private async checkParser(): Promise<boolean> {
+		const parserPath = path.join(this.context.extensionPath, 'src', 'parser', 'parser');
+		const exists = fs.existsSync(parserPath);
 		
-		// 添加清除缓存命令
-		this.context.subscriptions.push(
-			vscode.commands.registerCommand('ijump.clearCache', () => {
-				this.parser.clearCache();
-				vscode.window.showInformationMessage('IJump: 已清除所有缓存');
+		if (!exists) {
+			const message = '未找到预编译的Go解析器，接口跳转功能将不可用';
+			const detail = '这可能是因为插件在打包时未能正确包含预编译的Go解析器。如果您是通过本地开发安装的插件，请尝试使用发布版本。';
+			
+			console.error(`[IJump] ${message}`);
+			
+			const goVersion = await this.checkGoEnvironment();
+			if (goVersion) {
+				const compile = '尝试编译';
+				const result = await vscode.window.showErrorMessage(
+					`[IJump] ${message}`, 
+					{ modal: false, detail },
+					compile
+				);
 				
-				// 如果当前有活动编辑器，更新装饰
-				if (vscode.window.activeTextEditor) {
-					this.throttleUpdateDecorations(vscode.window.activeTextEditor);
-				}
-			})
-		);
-	}
-	
-	// 注册事件监听器
-	private registerEventListeners() {
-		// 监听编辑器变化
-		this.context.subscriptions.push(
-			vscode.window.onDidChangeActiveTextEditor(editor => {
-				if (editor && editor.document.languageId === 'go') {
-					// 只在切换到不同文件时触发更新
-					if (this.lastAnalyzedFile !== editor.document.uri.fsPath) {
-						// 立即更新，不使用节流
-						this.updateDecorations(editor);
-						this.lastAnalyzedFile = editor.document.uri.fsPath;
+				if (result === compile) {
+					const success = await this.parser.ensureParserReady();
+					if (success) {
+						vscode.window.showInformationMessage('[IJump] Go解析器编译成功');
+						return true;
+					} else {
+						vscode.window.showErrorMessage('[IJump] Go解析器编译失败，接口跳转功能将不可用');
 					}
 				}
-			})
-		);
-
-		// 监听文档保存 - 只在保存Go文件时更新，而不是每次编辑
-		this.context.subscriptions.push(
-			vscode.workspace.onDidSaveTextDocument(document => {
-				const editor = vscode.window.activeTextEditor;
-				if (editor && document.languageId === 'go' && document === editor.document) {
-					// 清除保存文件所在包的缓存
-					this.parser.clearCache(document.uri.fsPath);
-					// 立即更新，不使用节流
-					this.updateDecorations(editor);
-				}
-			})
-		);
-		
-		// 添加悬停提示
-		this.context.subscriptions.push(
-			vscode.languages.registerHoverProvider('go', {
-				provideHover: (document, position, token) => this.provideHover(document, position, token)
-			})
-		);
-	}
-	
-	// 监视Go文件变化
-	private registerFileWatcher() {
-		// 创建Go文件变更监视器
-		const goFileWatcher = vscode.workspace.createFileSystemWatcher('**/*.go');
-		
-		// 监听文件创建
-		this.context.subscriptions.push(
-			goFileWatcher.onDidCreate(uri => {
-				// 新文件创建时清除所在包的缓存
-				this.parser.clearCache(uri.fsPath);
+			} else {
+				const installGo = '了解如何安装Go';
+				const result = await vscode.window.showErrorMessage(
+					`[IJump] ${message}。未检测到Go环境，接口跳转功能将不可用。`, 
+					{ modal: false, detail: detail + '\n\n要编译解析器，请安装Go编程语言。' },
+					installGo
+				);
 				
-				// 检查是否需要更新当前编辑器装饰
-				const editor = vscode.window.activeTextEditor;
-				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
-					this.throttleUpdateDecorations(editor);
+				if (result === installGo) {
+					vscode.env.openExternal(vscode.Uri.parse('https://golang.org/doc/install'));
 				}
-			})
-		);
-		
-		// 监听文件删除
-		this.context.subscriptions.push(
-			goFileWatcher.onDidDelete(uri => {
-				// 文件删除时清除所在包的缓存
-				this.parser.clearCache(uri.fsPath);
-				
-				// 检查是否需要更新当前编辑器装饰
-				const editor = vscode.window.activeTextEditor;
-				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
-					this.throttleUpdateDecorations(editor);
-				}
-			})
-		);
-		
-		// 添加到订阅列表
-		this.context.subscriptions.push(goFileWatcher);
-	}
-	
-	// 初始化
-	initialize() {
-		if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'go') {
-			// 立即更新，不使用节流
-			this.updateDecorations(vscode.window.activeTextEditor);
-			this.lastAnalyzedFile = vscode.window.activeTextEditor.document.uri.fsPath;
+			}
+			
+			console.log('[IJump] 将以降级模式运行，部分功能可能不可用');
+			return false;
 		}
+		
+		return true;
+	}
+	
+	/**
+	 * 检查Go环境
+	 */
+	private async checkGoEnvironment(): Promise<string | null> {
+		try {
+			const { promisify } = require('util');
+			const execFile = promisify(require('child_process').execFile);
+			const { stdout } = await execFile('go', ['version']);
+			return stdout.trim();
+		} catch (e) {
+			return null;
+		}
+	}
+
+	initialize() {
+		// 检查解析器
+		this.checkParser().then(exists => {
+			if (exists) {
+				console.log('[IJump] 预编译的Go解析器已就绪');
+				
+				// 处理当前打开的编辑器
+				if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'go') {
+					// 立即更新，不使用节流
+					this.updateDecorations(vscode.window.activeTextEditor);
+					this.lastAnalyzedFile = vscode.window.activeTextEditor.document.uri.fsPath;
+				}
+			}
+		});
 	}
 	
 	// 提供悬停信息
@@ -642,6 +611,110 @@ class IJumpExtension {
 		} catch (error) {
 			console.error('更新装饰失败:', error);
 		}
+	}
+	
+	// 注册命令
+	private registerCommands() {
+		// 跳转到接口方法的命令
+		this.context.subscriptions.push(
+			vscode.commands.registerCommand('ijump.jumpToInterface', async (uri: vscode.Uri, line: number) => {
+				await this.jumpToInterface(uri, line);
+			})
+		);
+
+		// 跳转到实现的命令
+		this.context.subscriptions.push(
+			vscode.commands.registerCommand('ijump.jumpToImplementation', async (uri: vscode.Uri, line: number) => {
+				await this.jumpToImplementation(uri, line);
+			})
+		);
+		
+		// 添加清除缓存命令
+		this.context.subscriptions.push(
+			vscode.commands.registerCommand('ijump.clearCache', () => {
+				this.parser.clearCache();
+				vscode.window.showInformationMessage('IJump: 已清除所有缓存');
+				
+				// 如果当前有活动编辑器，更新装饰
+				if (vscode.window.activeTextEditor) {
+					this.throttleUpdateDecorations(vscode.window.activeTextEditor);
+				}
+			})
+		);
+	}
+	
+	// 注册事件监听器
+	private registerEventListeners() {
+		// 监听编辑器变化
+		this.context.subscriptions.push(
+			vscode.window.onDidChangeActiveTextEditor(editor => {
+				if (editor && editor.document.languageId === 'go') {
+					// 只在切换到不同文件时触发更新
+					if (this.lastAnalyzedFile !== editor.document.uri.fsPath) {
+						// 立即更新，不使用节流
+						this.updateDecorations(editor);
+						this.lastAnalyzedFile = editor.document.uri.fsPath;
+					}
+				}
+			})
+		);
+
+		// 监听文档保存 - 只在保存Go文件时更新，而不是每次编辑
+		this.context.subscriptions.push(
+			vscode.workspace.onDidSaveTextDocument(document => {
+				const editor = vscode.window.activeTextEditor;
+				if (editor && document.languageId === 'go' && document === editor.document) {
+					// 清除保存文件所在包的缓存
+					this.parser.clearCache(document.uri.fsPath);
+					// 立即更新，不使用节流
+					this.updateDecorations(editor);
+				}
+			})
+		);
+		
+		// 添加悬停提示
+		this.context.subscriptions.push(
+			vscode.languages.registerHoverProvider('go', {
+				provideHover: (document, position, token) => this.provideHover(document, position, token)
+			})
+		);
+	}
+	
+	// 监视Go文件变化
+	private registerFileWatcher() {
+		// 创建Go文件变更监视器
+		const goFileWatcher = vscode.workspace.createFileSystemWatcher('**/*.go');
+		
+		// 监听文件创建
+		this.context.subscriptions.push(
+			goFileWatcher.onDidCreate(uri => {
+				// 新文件创建时清除所在包的缓存
+				this.parser.clearCache(uri.fsPath);
+				
+				// 检查是否需要更新当前编辑器装饰
+				const editor = vscode.window.activeTextEditor;
+				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
+					this.throttleUpdateDecorations(editor);
+				}
+			})
+		);
+		
+		// 监听文件删除
+		this.context.subscriptions.push(
+			goFileWatcher.onDidDelete(uri => {
+				// 文件删除时清除所在包的缓存
+				this.parser.clearCache(uri.fsPath);
+				
+				// 检查是否需要更新当前编辑器装饰
+				const editor = vscode.window.activeTextEditor;
+				if (editor && path.dirname(editor.document.uri.fsPath) === path.dirname(uri.fsPath)) {
+					this.throttleUpdateDecorations(editor);
+				}
+			})
+		);
+		
+		// 添加到订阅列表
+		this.context.subscriptions.push(goFileWatcher);
 	}
 }
 

@@ -80,7 +80,7 @@ export class GoAstParser {
     /**
      * 确保Go解析器可用
      */
-    private async ensureParserReady(): Promise<boolean> {
+    public async ensureParserReady(): Promise<boolean> {
         if (this.isParserReady) {
             return true;
         }
@@ -88,27 +88,116 @@ export class GoAstParser {
         const parserDir = path.dirname(this.parserPath);
         const parserBin = path.join(parserDir, 'parser');
         
-        // 检查解析器是否已编译
-        if (!fs.existsSync(parserBin)) {
-            console.log('编译Go解析器...');
+        // 同时检查输出目录中的解析器
+        const extensionRoot = path.resolve(parserDir, '..', '..');
+        const outParserDir = path.join(extensionRoot, 'out', 'parser');
+        const outParserBin = path.join(outParserDir, 'parser');
+        
+        console.log(`[IJump] 检查Go解析器路径: ${parserBin}`);
+        console.log(`[IJump] 检查输出目录解析器路径: ${outParserBin}`);
+        console.log(`[IJump] 源码路径: ${this.parserPath}`);
+
+        try {
+            // 首先检查预编译的解析器是否存在
+            let parserExists = fs.existsSync(parserBin);
+            let actualParserBin = parserBin;
+            
+            // 如果源目录中没有解析器，检查输出目录
+            if (!parserExists && fs.existsSync(outParserBin)) {
+                console.log('[IJump] 在源目录未找到解析器，使用输出目录中的版本');
+                parserExists = true;
+                actualParserBin = outParserBin;
+                
+                // 如果需要，将输出目录中的解析器复制到源目录
+                try {
+                    fs.mkdirSync(parserDir, { recursive: true });
+                    fs.copyFileSync(outParserBin, parserBin);
+                    console.log(`[IJump] 已将解析器从输出目录复制到源目录: ${parserBin}`);
+                    actualParserBin = parserBin;
+                } catch (copyError) {
+                    console.warn('[IJump] 无法复制解析器到源目录，将使用输出目录中的版本');
+                }
+            }
+            
+            if (parserExists) {
+                console.log(`[IJump] 找到预编译的Go解析器: ${actualParserBin}`);
+                
+                // 检查可执行权限
+                try {
+                    fs.accessSync(actualParserBin, fs.constants.X_OK);
+                    console.log('[IJump] 解析器具有执行权限');
+                } catch (permError) {
+                    console.warn('[IJump] 解析器缺少执行权限，尝试添加权限');
+                    try {
+                        // 尝试添加执行权限 (仅适用于类Unix系统)
+                        if (process.platform !== 'win32') {
+                            await execFile('chmod', ['+x', actualParserBin]);
+                            console.log('[IJump] 已添加执行权限');
+                        }
+                    } catch (chmodError: any) {
+                        console.error('[IJump] 无法添加执行权限:', chmodError.message);
+                        // 继续尝试，可能在某些环境中不需要显式权限
+                    }
+                }
+                
+                this.isParserReady = true;
+                return true;
+            }
+            
+            // 如果找不到预编译的解析器，尝试编译
+            // 检查Go环境
+            console.log('[IJump] 未找到预编译解析器，检查Go环境...');
+            try {
+                const { stdout: goVersion } = await execFile('go', ['version']);
+                console.log(`[IJump] Go版本: ${goVersion.trim()}`);
+            } catch (goError: any) {
+                console.error('[IJump] 无法检测Go环境，请确保Go已安装并在PATH中:', goError.message);
+                return false;
+            }
+            
+            // 尝试编译解析器
+            console.log('[IJump] 尝试编译Go解析器...');
             try {
                 await execFile('go', ['build', '-o', parserBin, this.parserPath], {
                     cwd: parserDir
                 });
-                console.log('Go解析器编译完成');
+                console.log('[IJump] Go解析器编译成功');
+                
+                // 再次检查文件是否正确创建
+                if (!fs.existsSync(parserBin)) {
+                    console.error('[IJump] 编译似乎成功但未找到输出文件');
+                    return false;
+                }
+                
+                // 确保输出目录存在并复制解析器
+                try {
+                    fs.mkdirSync(outParserDir, { recursive: true });
+                    fs.copyFileSync(parserBin, outParserBin);
+                    console.log(`[IJump] 已将编译的解析器复制到输出目录: ${outParserBin}`);
+                    
+                    // 确保复制的文件有执行权限
+                    if (process.platform !== 'win32') {
+                        await execFile('chmod', ['+x', outParserBin]);
+                    }
+                } catch (copyError: any) {
+                    console.warn('[IJump] 无法复制解析器到输出目录:', copyError.message);
+                }
+                
                 this.isParserReady = true;
                 return true;
             } catch (compileError: any) {
-                console.error('Go解析器编译失败:', compileError.message);
+                console.error('[IJump] Go解析器编译失败:', compileError.message);
                 if (compileError.stderr) {
-                    console.error('编译错误详情:', compileError.stderr);
+                    console.error('[IJump] 编译错误详情:', compileError.stderr);
                 }
+                console.log('[IJump] 当前工作目录:', parserDir);
+                console.log('[IJump] 执行命令:', `go build -o ${parserBin} ${this.parserPath}`);
                 return false;
             }
+        } catch (error: any) {
+            console.error('[IJump] 意外错误:', error.message);
+            return false;
         }
-        
-        this.isParserReady = true;
-        return true;
     }
 
     /**
@@ -128,7 +217,7 @@ export class GoAstParser {
         if (this.fileCache.has(filePath)) {
             const cacheTime = this.fileCacheTimes.get(filePath) || 0;
             if (now - cacheTime < this.fileCacheTimeToLive) {
-                console.log(`使用文件级缓存: ${filePath}`);
+                console.log(`[IJump] 使用文件级缓存: ${filePath}`);
                 return this.fileCache.get(filePath)!;
             }
         }
@@ -149,25 +238,34 @@ export class GoAstParser {
                 this.fileCache.set(filePath, result);
                 this.fileCacheTimes.set(filePath, now);
                 
-                console.log(`使用包级缓存: ${packagePath} 对文件: ${filePath}`);
+                console.log(`[IJump] 使用包级缓存: ${packagePath} 对文件: ${filePath}`);
                 return result;
             }
         }
 
         // 3. 没有有效缓存，解析文件 - 慢路径
         try {
-            console.log(`解析: ${filePath}`);
+            console.log(`[IJump] 解析文件: ${filePath}`);
 
             // 确保解析器就绪
             if (!await this.ensureParserReady()) {
-                throw new Error('Go解析器未就绪');
+                console.error('[IJump] Go解析器未就绪，无法解析文件');
+                console.error('[IJump] 将使用空结果继续，界面功能可能受限');
+                return { packages: {} };
             }
             
             const parserDir = path.dirname(this.parserPath);
             const parserBin = path.join(parserDir, 'parser');
             
+            // 检查文件是否存在
+            if (!fs.existsSync(filePath)) {
+                console.error(`[IJump] 文件不存在: ${filePath}`);
+                return { packages: {} };
+            }
+            
             // 调用解析器
             try {
+                console.log(`[IJump] 执行解析器: ${parserBin} ${filePath}`);
                 const { stdout } = await execFile(parserBin, [filePath]);
                 
                 // 解析JSON
@@ -176,7 +274,8 @@ export class GoAstParser {
                     
                     // 检查结果是否有效
                     if (!result || !result.packages) {
-                        throw new Error('解析结果无效');
+                        console.error('[IJump] 解析结果无效');
+                        return { packages: {} };
                     }
                     
                     // 检查是否找到了包信息
@@ -191,22 +290,26 @@ export class GoAstParser {
                         this.fileCache.set(filePath, result);
                         this.fileCacheTimes.set(filePath, now);
                         
-                        console.log(`解析成功，已缓存`);
+                        console.log(`[IJump] 解析成功，已缓存，找到 ${packageCount} 个包`);
                     } else {
-                        console.warn(`未找到包信息: ${packagePath}`);
+                        console.warn(`[IJump] 未找到包信息: ${packagePath}`);
                     }
     
                     return result;
-                } catch (jsonError) {
-                    console.error('JSON解析失败');
-                    throw new Error(`无法解析Go解析器的输出`);
+                } catch (jsonError: any) {
+                    console.error('[IJump] JSON解析失败:', jsonError.message);
+                    console.error('[IJump] 解析器输出:', stdout.substring(0, 200) + (stdout.length > 200 ? '...' : ''));
+                    return { packages: {} };
                 }
             } catch (execError: any) {
-                console.error('执行Go解析器失败');
-                throw new Error(`执行Go解析器失败`);
+                console.error('[IJump] 执行Go解析器失败:', execError.message);
+                if (execError.stderr) {
+                    console.error('[IJump] 解析器错误输出:', execError.stderr);
+                }
+                return { packages: {} };
             }
         } catch (error: any) {
-            const errorMsg = `解析失败: ${filePath}`;
+            const errorMsg = `[IJump] 解析失败: ${filePath} - ${error.message}`;
             console.error(errorMsg);
             // 返回空结果而不是抛出异常
             return {
