@@ -246,6 +246,8 @@ class IJumpExtension {
 	private decorationManager: DecorationManager;
 	private decorationGenerator: DecorationGenerator;
 	private cacheManager: CacheManager;
+	private updateThrottleTimer: NodeJS.Timeout | null = null;
+	private throttleDelay: number = 1000; // 1秒节流延迟
 	
 	constructor(private context: vscode.ExtensionContext) {
 		this.parser = new GoAstParser(context.extensionPath);
@@ -280,7 +282,7 @@ class IJumpExtension {
 		this.context.subscriptions.push(
 			vscode.window.onDidChangeActiveTextEditor(editor => {
 				if (editor) {
-					this.updateDecorations(editor);
+					this.throttleUpdateDecorations(editor);
 				}
 			})
 		);
@@ -290,7 +292,7 @@ class IJumpExtension {
 			vscode.workspace.onDidChangeTextDocument(event => {
 				const editor = vscode.window.activeTextEditor;
 				if (editor && event.document === editor.document) {
-					this.updateDecorations(editor);
+					this.throttleUpdateDecorations(editor);
 				}
 			})
 		);
@@ -306,7 +308,7 @@ class IJumpExtension {
 	// 初始化
 	initialize() {
 		if (vscode.window.activeTextEditor) {
-			this.updateDecorations(vscode.window.activeTextEditor);
+			this.throttleUpdateDecorations(vscode.window.activeTextEditor);
 		}
 	}
 	
@@ -413,6 +415,20 @@ class IJumpExtension {
 		}
 	}
 	
+	// 更新装饰的节流函数
+	private throttleUpdateDecorations(editor: vscode.TextEditor) {
+		// 取消先前的更新计时器
+		if (this.updateThrottleTimer) {
+			clearTimeout(this.updateThrottleTimer);
+		}
+		
+		// 设置新的延迟更新
+		this.updateThrottleTimer = setTimeout(() => {
+			this.updateDecorations(editor);
+			this.updateThrottleTimer = null;
+		}, this.throttleDelay);
+	}
+	
 	// 更新装饰
 	private async updateDecorations(editor: vscode.TextEditor) {
 		if (!editor || editor.document.languageId !== 'go') {
@@ -430,6 +446,12 @@ class IJumpExtension {
 		try {
 			// 使用AST解析器获取信息
 			const parseResult = await this.parser.parseGoFile(document.uri.fsPath);
+			
+			// 检查是否返回了有效的包信息
+			if (!parseResult || !parseResult.packages || Object.keys(parseResult.packages).length === 0) {
+				console.log('未找到有效的Go包信息，跳过装饰更新');
+				return;
+			}
 			
 			// 获取接口和实现信息
 			const interfaceNames = this.parser.getAllInterfaceNames(parseResult);
@@ -535,11 +557,13 @@ class IJumpExtension {
 				
 				// 只处理嵌入字段
 				const fields = structInfo.get('fields');
-				for (const [fieldName, fieldInfo] of fields.entries()) {
-					if (fieldInfo.embedded && fieldInfo.uri.toString() === docKey) {
-						methodMap.set(fieldInfo.line, fieldInfo.type);
-						lineTypes.set(fieldInfo.line, 'interface');
-						docDecoratedLines.add(fieldInfo.line);
+				if (fields) {
+					for (const [fieldName, fieldInfo] of fields.entries()) {
+						if (fieldInfo.embedded && fieldInfo.uri.toString() === docKey) {
+							methodMap.set(fieldInfo.line, fieldInfo.type);
+							lineTypes.set(fieldInfo.line, 'interface');
+							docDecoratedLines.add(fieldInfo.line);
+						}
 					}
 				}
 			}

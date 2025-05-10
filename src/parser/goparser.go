@@ -97,18 +97,31 @@ func parseDirectory(dirPath string) (ParseResult, error) {
 		Packages: make(map[string]PackageInfo),
 	}
 
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+	// 创建一个已处理目录的集合，避免重复处理
+	processedDirs := make(map[string]bool)
+
+	// 递归处理同一个包中的所有Go文件
+	processDir := func(dir string) error {
+		// 避免重复处理同一目录
+		if processedDirs[dir] {
+			return nil
+		}
+		processedDirs[dir] = true
+
+		// 查找同包下的所有Go文件
+		goFiles, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "查找Go文件失败 %s: %v\n", dir, err)
+			return nil // 继续处理其他目录
 		}
 
-		// 只处理Go文件
-		if !info.IsDir() && strings.HasSuffix(path, ".go") {
+		// 解析当前目录中的所有Go文件
+		for _, path := range goFiles {
 			fset := token.NewFileSet()
 			node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "解析文件失败 %s: %v\n", path, err)
-				return nil // 继续处理其他文件
+				continue // 继续处理其他文件
 			}
 
 			packageName := node.Name.Name
@@ -237,10 +250,36 @@ func parseDirectory(dirPath string) (ParseResult, error) {
 			// 更新包信息
 			result.Packages[packagePath] = pkgInfo
 		}
-		return nil
-	})
 
-	return result, err
+		return nil
+	}
+
+	// 处理主目录
+	if err := processDir(dirPath); err != nil {
+		return result, err
+	}
+
+	// 查找相邻的Go文件和目录 (仅在同一级目录中查找，不再递归整个项目)
+	// 这样可以处理分散在同一个包中的多个文件，而不会扫描整个项目
+	files, err := os.ReadDir(dirPath)
+	if err == nil {
+		for _, file := range files {
+			if file.IsDir() {
+				// 检查目录名是否合法（非隐藏目录）
+				if !strings.HasPrefix(file.Name(), ".") {
+					// 检查是否有.go文件
+					subDirPath := filepath.Join(dirPath, file.Name())
+					goFiles, err := filepath.Glob(filepath.Join(subDirPath, "*.go"))
+					if err == nil && len(goFiles) > 0 {
+						// 只处理包含Go文件的直接子目录
+						_ = processDir(subDirPath)
+					}
+				}
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // 分析指定文件和相关包
