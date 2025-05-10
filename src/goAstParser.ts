@@ -571,11 +571,10 @@ export class GoAstParser {
                 const implementationRate = interfaceMethods.length > 0 ? 
                     implementedMethodCount / interfaceMethods.length : 0;
                 
-                // 检查是否完全匹配或高度匹配
+                // 只有完全匹配才标记为实现，移除高匹配率条件
                 const perfectMatch = implementationRate === 1.0;
-                const highMatch = implementationRate >= 0.8;
                 
-                if (perfectMatch || highMatch) {
+                if (perfectMatch) {
                     addImplementation(interfaceName, structName);
                 }
             }
@@ -675,14 +674,14 @@ export class GoAstParser {
                         }
                     }
                     
+                    // 计算实现率
                     const implementationRate = interfaceMethods.length > 0 ? 
                         implementedMethodCount / interfaceMethods.length : 0;
                     
-                    // 检查是否完全匹配或高度匹配
+                    // 只有完全匹配才标记为实现，移除高匹配率条件
                     const perfectMatch = implementationRate === 1.0;
-                    const highMatch = implementationRate >= 0.8;
                     
-                    if (perfectMatch || highMatch) {
+                    if (perfectMatch) {
                         addImplementation(interfaceName, structName);
                     }
                 }
